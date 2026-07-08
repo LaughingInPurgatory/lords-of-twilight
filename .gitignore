@@ -1,0 +1,5 @@
+# macOS
+.DS_Store
+
+# runtime-generated leaderboard (created on first score submit)
+highscores.txt
