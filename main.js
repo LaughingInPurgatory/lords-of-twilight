@@ -57,6 +57,7 @@ ipcMain.handle('scores:add', (_e, body) => {
   try { return addScore(body); }
   catch (err) { console.error('score write failed:', err.message); return { scores: loadScores().slice(0, TOP_N), rank: -1 }; }
 });
+ipcMain.handle('app:quit', () => app.quit());
 
 /* ------------------------------- window --------------------------------- */
 function buildMenu() {

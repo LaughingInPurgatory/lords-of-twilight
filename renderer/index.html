@@ -123,6 +123,25 @@
   #hudRight .qi { color:#d9a7ff; }
   #hudRight .day { color:#e8d9a0; font-size:13px; }
   #padInfo { color:#6fb987; }
+
+  /* ---------- pause menu ---------- */
+  #ovPause { flex-direction:column; text-align:center; background:rgba(5,5,10,.82); }
+  #pauseBox {
+    background:linear-gradient(180deg,#1c1a2c,#121020); border:2px solid #8f7a3f; border-radius:8px;
+    padding:22px 42px; max-width:560px; width:86%; box-shadow:0 0 46px rgba(0,0,0,.85);
+  }
+  #pauseBox h3 { color:#ffd98a; letter-spacing:8px; font-variant:small-caps; font-size:30px; margin-bottom:4px; }
+  #pauseBox .psub { color:#9d95c0; font-style:italic; font-size:13px; margin-bottom:14px; }
+  #pauseScores {
+    font:13px 'Courier New', monospace; color:#c8bfe8; margin-bottom:18px; line-height:1.65; min-height:20px;
+    text-align:left; display:inline-block;
+  }
+  #pauseScores b { color:#ffd98a; letter-spacing:2px; }
+  #pauseScores .me { color:#ffd98a; }
+  .pauseBtns { display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .pauseBtns .btn { width:230px; margin:0; }
+  #quitBtn { border-color:#8f4a4a; color:#f0c8c8; }
+  #quitBtn:hover { filter:brightness(1.2) saturate(1.3); }
 </style>
 </head>
 <body>
@@ -152,6 +171,19 @@
         <div id="modalBox"></div>
       </div>
 
+      <div id="ovPause" class="ov hidden">
+        <div id="pauseBox">
+          <h3>Paused</h3>
+          <div class="psub">— the host halts upon the road —</div>
+          <div id="pauseScores"></div>
+          <div class="pauseBtns">
+            <button class="btn big" data-act="resume">Continue &nbsp;(Esc)</button>
+            <button class="btn" data-act="restart">Restart Quest</button>
+            <button class="btn" id="quitBtn" data-act="quit">Quit to Desktop</button>
+          </div>
+        </div>
+      </div>
+
       <div id="ovEnd" class="ov hidden">
         <div id="endBox">
           <div id="endTitle"></div>
@@ -179,9 +211,9 @@
         <button class="btn big" data-act="start" style="margin-top:18px">Begin the Quest</button>
         <button class="btn" data-act="toggleMusic" id="musicBtnTitle" style="margin-top:6px;font-size:13px;padding:6px 16px">♪ Music: On</button>
         <div class="legend">
-          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr; or W forward<br>R rest &nbsp;M map &nbsp;Tab next lord<br>Enter confirm &nbsp;Esc close</div>
+          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr; or W forward<br>R rest &nbsp;M map &nbsp;Tab next lord<br>Enter confirm &nbsp;Esc pause</div>
           <div><b>MOUSE</b>click sides of view: turn<br>click centre: forward<br>use the buttons below</div>
-          <div><b>GAMEPAD</b>d-pad/stick: turn + forward<br>A confirm &nbsp;B close &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
+          <div><b>GAMEPAD</b>d-pad/stick: turn + forward<br>A confirm &nbsp;B pause &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
         </div>
         <div id="titleScores">&nbsp;</div>
       </div>

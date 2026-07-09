@@ -1259,7 +1259,22 @@ function switchLord(dir) {
 function syncOverlays() {
   $('ovTitle').classList.toggle('hidden', state.screen !== 'title');
   $('ovEnd').classList.toggle('hidden', state.screen !== 'end');
+  $('ovPause').classList.add('hidden');
   if (state.screen !== 'play') { $('ovMap').classList.add('hidden'); $('ovModal').classList.add('hidden'); }
+}
+
+/* ------------------------------- pause menu ----------------------------- */
+const pauseOpen = () => !$('ovPause').classList.contains('hidden');
+function openPause() {
+  $('ovPause').classList.remove('hidden');
+  $('pauseScores').innerHTML = 'Consulting the annals…';
+  fetchScores().then(s => renderScoreList(s, -1, 'pauseScores'))
+    .catch(() => { $('pauseScores').innerHTML = '<i>The annals are unreachable.</i>'; });
+}
+function closePause() { $('ovPause').classList.add('hidden'); }
+function quitGame() {
+  if (window.lotApp && window.lotApp.quit) window.lotApp.quit();
+  else window.close();
 }
 function startGame() {
   newGame();
@@ -1271,7 +1286,7 @@ function startGame() {
     `<i>"Ride east, Athelorn. Rally every lord who yet stands free — Ithrilan foretold that only a host of ` +
     `<b>${SEAL_STRENGTH} spears</b>, gathered at the very brink, can seal the Abyssal Rift. ` +
     `You have <b>${DAY_LIMIT} days</b> before the corruption swallows the Citadel of Dawn."</i><br>` +
-    `<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, and consult your map with M.</small>`);
+    `<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, map with M, and pause with Esc.</small>`);
   updateHUD();
 }
 function goEnd(outcome, cause) {
@@ -1309,8 +1324,8 @@ async function fetchScores() {
   if (!window.lotScores) return [];
   return (await window.lotScores.get()).scores || [];
 }
-function renderScoreList(scores, rank) {
-  const el = $('endScores');
+function renderScoreList(scores, rank, elId = 'endScores') {
+  const el = $(elId);
   if (!scores.length) { el.innerHTML = '<i>No names yet stand in the annals. Be the first!</i>'; return; }
   el.innerHTML = '<b>— THE ANNALS OF TWILIGHT —</b><br>' + scores.slice(0, 10).map((s, i) =>
     `<span class="${i === rank ? 'me' : ''}">${String(i + 1).padStart(2, ' ')}. ${s.name.padEnd(16, '·')} ${String(s.score).padStart(6, ' ')}  ${s.outcome === 'victory' ? '✦' : '✝'} day ${s.days}</span>`
@@ -1346,15 +1361,20 @@ function dispatch(act) {
   if ((act === 'confirm' || act === 'cancel') && modalOpen()) { closeModal(); return; }
   switch (act) {
     case 'start':        if (state.screen === 'title') startGame(); return;
-    case 'restart':      if (state.screen === 'end') startGame(); return;
+    case 'restart':      if (state.screen === 'end' || pauseOpen()) startGame(); return;
+    case 'resume':       closePause(); return;
+    case 'quit':         quitGame(); return;
     case 'toTitle':      if (state.screen === 'end') { state.screen = 'title'; syncOverlays(); loadTitleScores(); playMusic('title'); } return;
     case 'submitScore':  submitScore(); return;
     case 'toggleMusic':  setMusic(!musicOn); return;   /* works on any screen */
   }
   if (state.screen !== 'play' || modalOpen()) return;
+  /* pause menu takes precedence over all other play input */
+  if (pauseOpen()) { if (act === 'cancel' || act === 'toggleMap') closePause(); return; }
   const mapUp = !$('ovMap').classList.contains('hidden');
   if (act === 'toggleMap') { $('ovMap').classList.toggle('hidden'); return; }
   if (mapUp) { if (act === 'cancel') $('ovMap').classList.add('hidden'); return; }
+  if (act === 'cancel') { openPause(); return; }   /* Esc / B opens the pause menu */
   switch (act) {
     case 'turnLeft':  turn(-1); updateHUD(); break;
     case 'turnRight': turn(1);  updateHUD(); break;
