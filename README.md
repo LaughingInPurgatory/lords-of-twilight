@@ -16,7 +16,15 @@ Grab the installer for your platform — each opens the game in its own window:
 | **macOS** | `Lords of Twilight-<version>-mac-arm64.dmg` (Apple Silicon) or `…mac-x64.dmg` (Intel) |
 | **Linux** | `Lords of Twilight-<version>-linux-x86_64.AppImage` (or `…arm64.AppImage`) — `chmod +x` it, then run |
 
-> The builds are **unsigned**. On macOS the first launch needs right-click → **Open** (or *System Settings → Privacy &amp; Security → Open Anyway*); on Windows SmartScreen, choose **More info → Run anyway**.
+> The builds are **unsigned** (no paid Apple/Microsoft signing certificate).
+>
+> **macOS:** drag the app to **Applications**, then first launch → right-click the app → **Open** (or *System Settings → Privacy &amp; Security → Open Anyway*). If macOS instead says the app is **"damaged and can't be opened"**, that's the download-quarantine flag on an unsigned app — clear it once with:
+> ```bash
+> xattr -cr "/Applications/Lords of Twilight.app"
+> ```
+> then open it normally.
+>
+> **Windows:** SmartScreen → **More info → Run anyway**.
 
 Your high scores are saved per-user (e.g. `~/Library/Application Support/Lords of Twilight/highscores.txt` on macOS, `%APPDATA%` on Windows), so they survive reinstalls and updates. That flat text file is the only thing the app writes outside itself — delete it to reset the annals.
 
