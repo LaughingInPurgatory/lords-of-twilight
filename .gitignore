@@ -3,3 +3,7 @@
 
 # runtime-generated leaderboard (created on first score submit)
 highscores.txt
+
+# Electron packaging
+node_modules/
+dist/

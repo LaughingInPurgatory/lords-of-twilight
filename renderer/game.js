@@ -1,325 +1,3 @@
-#!/usr/bin/env node
-/* ==========================================================================
-   LORDS OF TWILIGHT — a tale of the Third Age of Midnight
-   A spiritual sequel to Mike Singleton's Lords of Midnight / Doomdark's
-   Revenge. Explore the panorama, rally the free lords, seal the Abyssal Rift.
-
-   ONE FILE. Node core modules only — no npm install, no build step,
-   no framework.
-
-       node twilight.js          then open  http://localhost:3210
-
-   The whole HTML5-canvas game is embedded below in PAGE and served from
-   memory. High scores persist in a plain-text database (highscores.txt,
-   one pipe-separated record per line) beside this script.
-
-   MUSIC (optional): drop these files beside twilight.js and they play —
-       title.mp3   on the title screen (loops)
-       bg.mp3      while playing (loops)
-       win.mp3     on victory
-       ded.mp3     on defeat
-   Missing files are skipped silently.
-   ========================================================================== */
-'use strict';
-
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-
-const PORT = Number(process.env.PORT) || 3210;
-const SCORE_FILE = path.join(__dirname, 'highscores.txt');
-const TOP_N = 10;
-const MUSIC_FILES = ['title.mp3', 'bg.mp3', 'win.mp3', 'ded.mp3'];
-
-/* ------------------------- plain-text score DB --------------------------
-   line format:  score|name|days|outcome|iso-date                           */
-function loadScores() {
-  let text = '';
-  try { text = fs.readFileSync(SCORE_FILE, 'utf8'); } catch { return []; }
-  const scores = [];
-  for (const line of text.split('\n')) {
-    const parts = line.split('|');
-    if (parts.length < 5) continue;
-    const score = parseInt(parts[0], 10);
-    if (!Number.isFinite(score)) continue;
-    scores.push({
-      score,
-      name: parts[1],
-      days: parseInt(parts[2], 10) || 0,
-      outcome: parts[3] === 'victory' ? 'victory' : 'defeat',
-      date: parts[4],
-    });
-  }
-  scores.sort((a, b) => b.score - a.score);
-  return scores;
-}
-
-function sanitizeRecord(body) {
-  const name = String(body.name || 'WANDERER')
-    .replace(/[^\x20-\x7E]/g, '')   /* printable ASCII only */
-    .replace(/[|\\]/g, '')          /* keep the flat file intact */
-    .trim().slice(0, 16) || 'WANDERER';
-  const score = Math.max(0, Math.min(9999999, Math.floor(Number(body.score) || 0)));
-  const days = Math.max(0, Math.min(999, Math.floor(Number(body.days) || 0)));
-  const outcome = body.outcome === 'victory' ? 'victory' : 'defeat';
-  return { name, score, days, outcome, date: new Date().toISOString() };
-}
-
-function addScore(rec) {
-  fs.appendFileSync(SCORE_FILE, rec.score + '|' + rec.name + '|' + rec.days + '|' + rec.outcome + '|' + rec.date + '\n', 'utf8');
-  const top = loadScores().slice(0, TOP_N);
-  const rank = top.findIndex(s => s.date === rec.date && s.name === rec.name && s.score === rec.score);
-  return { scores: top, rank };
-}
-
-function sendJSON(res, status, obj) {
-  const body = JSON.stringify(obj);
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(body) });
-  res.end(body);
-}
-
-/* --------------------------- music streaming ----------------------------
-   Serves the optional mp3 files with Range support (Safari needs it).     */
-function serveMusic(req, res, name) {
-  const fp = path.join(__dirname, name);
-  let st;
-  try { st = fs.statSync(fp); } catch { res.writeHead(404); return res.end(); }
-  if (req.method === 'HEAD') {
-    res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
-    return res.end();
-  }
-  const range = req.headers.range && /bytes=(\d*)-(\d*)/.exec(req.headers.range);
-  if (range) {
-    const start = range[1] ? parseInt(range[1], 10) : 0;
-    let end = range[2] ? parseInt(range[2], 10) : st.size - 1;
-    end = Math.min(end, st.size - 1);
-    if (start > end || start >= st.size) {
-      res.writeHead(416, { 'Content-Range': 'bytes */' + st.size });
-      return res.end();
-    }
-    res.writeHead(206, {
-      'Content-Type': 'audio/mpeg',
-      'Content-Range': 'bytes ' + start + '-' + end + '/' + st.size,
-      'Accept-Ranges': 'bytes',
-      'Content-Length': end - start + 1,
-    });
-    fs.createReadStream(fp, { start, end }).pipe(res);
-  } else {
-    res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': st.size, 'Accept-Ranges': 'bytes' });
-    fs.createReadStream(fp).pipe(res);
-  }
-}
-
-/* ============================== THE GAME =================================
-   Entire client (HTML + CSS + canvas game) lives in this template literal.
-   Backticks and dollar-brace sequences inside it are escaped.              */
-const PAGE = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lords of Twilight</title>
-<style>
-  * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; }
-  body {
-    background: radial-gradient(ellipse at 50% 30%, #191527 0%, #0b0a12 65%, #050508 100%);
-    color:#cfc9e8; font-family: Georgia, 'Times New Roman', serif;
-    display:flex; align-items:center; justify-content:center; min-height:100vh; padding:12px;
-    user-select:none; -webkit-user-select:none;
-  }
-  #frame {
-    width:min(97vw, 1004px);
-    border:3px double #8f7a3f; border-radius:6px; overflow:hidden;
-    box-shadow: 0 0 40px rgba(120,80,200,.18), 0 0 120px rgba(0,0,0,.8), inset 0 0 30px rgba(0,0,0,.6);
-    background:#0a0a12;
-  }
-  #stage { position:relative; }
-  #scene { display:block; width:100%; height:auto; cursor:pointer; }
-  /* subtle retro scanlines + vignette */
-  #scan {
-    position:absolute; inset:0; pointer-events:none;
-    background:
-      repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 1px, transparent 1px 3px),
-      radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.35) 100%);
-    mix-blend-mode:multiply;
-  }
-  .ov { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:5; }
-  .hidden { display:none !important; }
-
-  /* ---------- modal ---------- */
-  #ovModal { background:rgba(5,5,10,.45); }
-  #modalBox {
-    max-width:600px; width:86%; background:linear-gradient(180deg,#1c1a2c,#121020);
-    border:2px solid #8f7a3f; border-radius:6px; padding:22px 26px; text-align:center;
-    box-shadow:0 0 40px rgba(0,0,0,.8); font-size:17px; line-height:1.55;
-  }
-  #modalBox h3 { color:#ffd98a; letter-spacing:3px; margin-bottom:10px; font-variant:small-caps; }
-  #modalBox .good { color:#9fe6a0; } #modalBox .bad { color:#ff9c9c; } #modalBox .arc { color:#d9a7ff; }
-  #modalBox .cont { margin-top:16px; }
-
-  /* ---------- map ---------- */
-  #ovMap { background:rgba(5,5,10,.72); }
-  .mapwrap { background:#100e1c; border:2px solid #8f7a3f; border-radius:6px; padding:8px 12px; text-align:center; }
-  .mapwrap h3 { color:#ffd98a; letter-spacing:5px; font-variant:small-caps; margin-bottom:4px; font-size:15px; }
-  #mapc { border:1px solid #3a3654; background:#07060d; image-rendering:pixelated; }
-  #maplegend { font:10px 'Courier New', monospace; color:#9d95c0; margin:4px 0 6px; }
-  .mapwrap .btn { padding:5px 16px; font-size:13px; margin:0; }
-
-  /* ---------- title ---------- */
-  #ovTitle { flex-direction:column; text-align:center; background:linear-gradient(180deg, rgba(4,3,10,.25), rgba(4,3,10,.55) 78%); }
-  #ovTitle h1 {
-    font-size:62px; letter-spacing:10px; font-variant:small-caps; font-weight:700;
-    background:linear-gradient(180deg,#fff3cf 5%,#e8c069 45%,#8a5c1d 90%);
-    -webkit-background-clip:text; background-clip:text; color:transparent;
-    filter:drop-shadow(0 3px 14px rgba(255,180,60,.35));
-    margin-bottom:2px;
-  }
-  #ovTitle .sub { color:#b7a0e8; letter-spacing:6px; font-variant:small-caps; font-size:16px; margin-bottom:14px; text-shadow:0 0 12px rgba(150,90,255,.5); }
-  #ovTitle .lore { max-width:640px; width:88%; color:#d8d2ea; font-size:15px; line-height:1.5; font-style:italic; text-shadow:0 1px 4px #000; }
-  #ovTitle .legend {
-    display:flex; gap:26px; margin-top:14px; font:12px 'Courier New', monospace; color:#a79ecb; text-align:left;
-    background:rgba(10,8,20,.55); border:1px solid #3a3654; border-radius:6px; padding:10px 16px;
-  }
-  #ovTitle .legend b { color:#e8d9a0; display:block; margin-bottom:3px; letter-spacing:2px; }
-  #titleScores { margin-top:12px; font:12px 'Courier New', monospace; color:#c8bfe8; min-height:16px; }
-  #titleScores b { color:#ffd98a; letter-spacing:2px; }
-
-  /* ---------- end screens ---------- */
-  #ovEnd { flex-direction:column; text-align:center; }
-  #endBox { background:rgba(10,8,20,.72); border:2px solid #8f7a3f; border-radius:8px; padding:24px 40px; max-width:640px; width:88%; }
-  #endTitle { font-size:44px; letter-spacing:8px; font-variant:small-caps; margin-bottom:6px; }
-  .victory #endTitle { color:#ffe9a8; text-shadow:0 0 24px rgba(255,200,80,.65); }
-  .gameover #endTitle { color:#ff8f8f; text-shadow:0 0 24px rgba(255,60,60,.5); }
-  #endCause { color:#c9c2e2; font-style:italic; margin-bottom:14px; font-size:16px; line-height:1.5; }
-  #endStats { font:14px 'Courier New', monospace; color:#b7e2c0; margin-bottom:14px; line-height:1.7; }
-  #scoreRow { margin-bottom:12px; }
-  #nameIn {
-    background:#0d0b18; color:#ffd98a; border:1px solid #8f7a3f; border-radius:4px;
-    font:16px 'Courier New', monospace; padding:8px 10px; width:180px; text-align:center; letter-spacing:2px;
-  }
-  #endScores { font:13px 'Courier New', monospace; color:#c8bfe8; margin:8px 0 14px; line-height:1.65; min-height:20px; }
-  #endScores .me { color:#ffd98a; }
-  #endScores b { color:#ffd98a; letter-spacing:2px; }
-
-  .btn {
-    background:linear-gradient(180deg,#3a3a55,#222238); border:1px solid #8f7a3f; color:#efe2b4;
-    padding:10px 24px; font:600 16px Georgia, serif; letter-spacing:3px; font-variant:small-caps;
-    cursor:pointer; border-radius:4px; margin:4px 6px;
-    box-shadow:0 2px 10px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.09);
-    transition:filter .12s, transform .06s;
-  }
-  .btn:hover { filter:brightness(1.35); } .btn:active { transform:translateY(1px); }
-  .btn.big { font-size:20px; padding:12px 36px; }
-
-  /* ---------- HUD ---------- */
-  #hud {
-    display:flex; align-items:center; gap:16px; padding:10px 16px;
-    background:linear-gradient(180deg,#16142a,#0c0b16);
-    border-top:2px solid #43405f; min-height:104px;
-  }
-  #portrait { border:2px solid #8f7a3f; border-radius:4px; background:#0a0a14; flex:none; }
-  #lordInfo { font:13px 'Courier New', monospace; line-height:1.5; min-width:190px; }
-  #lordInfo .nm { color:#ffd98a; font-size:14px; letter-spacing:1px; }
-  #lordInfo .tt { color:#9d95c0; font-style:italic; }
-  #hudMid { display:flex; align-items:center; gap:10px; flex:1; justify-content:center; }
-  .cbtn {
-    width:52px; height:52px; border-radius:50%; border:2px solid #8f7a3f; cursor:pointer;
-    background:radial-gradient(circle at 35% 30%, #3d3b5e, #191728); color:#efe2b4; font-size:22px;
-    box-shadow:0 2px 8px rgba(0,0,0,.7); transition:filter .12s;
-  }
-  .cbtn:hover { filter:brightness(1.4); } .cbtn:active { transform:translateY(1px); }
-  .sbtn {
-    border:1px solid #57517a; background:linear-gradient(180deg,#28263e,#181628); color:#c6bfe4;
-    font:12px 'Courier New', monospace; padding:7px 10px; border-radius:4px; cursor:pointer; letter-spacing:1px;
-  }
-  .sbtn:hover { filter:brightness(1.4); }
-  #hudRight { font:12px 'Courier New', monospace; text-align:right; line-height:1.6; min-width:200px; color:#a79ecb; }
-  #hudRight .qi { color:#d9a7ff; }
-  #hudRight .day { color:#e8d9a0; font-size:13px; }
-  #padInfo { color:#6fb987; }
-</style>
-</head>
-<body>
-  <div id="frame">
-    <div id="stage">
-      <canvas id="scene" width="960" height="540"></canvas>
-      <div id="scan"></div>
-
-      <div id="ovMap" class="ov hidden">
-        <div class="mapwrap">
-          <h3>The Lands of Twilight</h3>
-          <canvas id="mapc" width="540" height="396"></canvas>
-          <div id="maplegend">
-            <span style="color:#e8d9a0">■</span> keep &nbsp;
-            <span style="color:#d8b46a">●</span> village &nbsp;
-            <span style="color:#9adfe8">▲</span> tower &nbsp;
-            <span style="color:#ffd24a">◆</span> your lords &nbsp;
-            <span style="color:#ff5c5c">●</span> abyssal horde &nbsp;
-            <span style="color:#e95cff">✦</span> the rift &nbsp;
-            <span style="color:#7a4a9e">▒</span> corruption
-          </div>
-          <button class="btn" data-act="toggleMap">Close &nbsp;(M)</button>
-        </div>
-      </div>
-
-      <div id="ovModal" class="ov hidden">
-        <div id="modalBox"></div>
-      </div>
-
-      <div id="ovEnd" class="ov hidden">
-        <div id="endBox">
-          <div id="endTitle"></div>
-          <div id="endCause"></div>
-          <div id="endStats"></div>
-          <div id="scoreRow">
-            <input id="nameIn" maxlength="16" placeholder="YOUR NAME">
-            <button class="btn" id="submitScore" data-act="submitScore">Carve Your Name</button>
-          </div>
-          <div id="endScores"></div>
-          <button class="btn big" data-act="restart">Play Again</button>
-          <button class="btn" data-act="toTitle">Title</button>
-        </div>
-      </div>
-
-      <div id="ovTitle" class="ov">
-        <h1>Lords of Twilight</h1>
-        <div class="sub">— a tale of the third age of midnight —</div>
-        <div class="lore">
-          Long after Doomdark fell and the Ice Crown was shattered, a wound has opened in the deep east:
-          <b>the Abyssal Rift</b>, and from it crawl creatures of living shadow.
-          Ride forth, rally the scattered lords of the free lands, and gather a host mighty enough
-          to seal the Rift &mdash; before the corruption swallows the Citadel of Dawn.
-        </div>
-        <button class="btn big" data-act="start" style="margin-top:18px">Begin the Quest</button>
-        <button class="btn" data-act="toggleMusic" id="musicBtnTitle" style="margin-top:6px;font-size:13px;padding:6px 16px">♪ Music: On</button>
-        <div class="legend">
-          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr; or W forward<br>R rest &nbsp;M map &nbsp;Tab next lord<br>Enter confirm &nbsp;Esc close</div>
-          <div><b>MOUSE</b>click sides of view: turn<br>click centre: forward<br>use the buttons below</div>
-          <div><b>GAMEPAD</b>d-pad/stick: turn + forward<br>A confirm &nbsp;B close &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
-        </div>
-        <div id="titleScores">&nbsp;</div>
-      </div>
-    </div>
-
-    <div id="hud">
-      <canvas id="portrait" width="72" height="72"></canvas>
-      <div id="lordInfo"></div>
-      <div id="hudMid">
-        <button class="cbtn" data-act="turnLeft"  title="Turn left (←)">&#10554;</button>
-        <button class="cbtn" data-act="forward"   title="Forward (↑)" style="font-size:26px">&#9650;</button>
-        <button class="cbtn" data-act="turnRight" title="Turn right (→)">&#10555;</button>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-left:10px">
-          <button class="sbtn" data-act="rest" title="Rest until dawn (R)">REST&nbsp;(R)</button>
-          <button class="sbtn" data-act="toggleMap" title="Consult the map (M)">MAP&nbsp;(M)</button>
-          <button class="sbtn" data-act="nextLord" title="Command the next lord (Tab)">NEXT&nbsp;LORD</button>
-          <button class="sbtn" data-act="toggleMusic" id="musicBtnHud" title="Toggle music">♪&nbsp;ON</button>
-        </div>
-      </div>
-      <div id="hudRight"></div>
-    </div>
-  </div>
-<script>
 /* ==========================================================================
    LORDS OF TWILIGHT — a tale of the Third Age of Midnight
    A spiritual sequel to Mike Singleton's Lords of Midnight / Doomdark's
@@ -332,8 +10,8 @@ const PAGE = `<!DOCTYPE html>
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 const lerp  = (a, b, t) => a + (b - a) * t;
 const colLerp = (a, b, t) => [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)];
-const rgb  = c => \`rgb(\${c[0]|0},\${c[1]|0},\${c[2]|0})\`;
-const rgba = (c, a) => \`rgba(\${c[0]|0},\${c[1]|0},\${c[2]|0},\${a})\`;
+const rgb  = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
+const rgba = (c, a) => `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
 
 function mulberry32(seed) {
   let s = seed >>> 0;
@@ -390,12 +68,13 @@ const portCv = document.getElementById('portrait'), pg = portCv.getContext('2d')
 const $ = id => document.getElementById(id);
 
 /* -------------------------------------------------------------- music ---
-   Drop title.mp3 / bg.mp3 / win.mp3 / ded.mp3 beside twilight.js and the
-   realm gains a voice. Missing files are silently skipped.               */
+   The four tracks are bundled beside index.html, so a plain relative
+   Audio() src loads them straight from disk — no server, no fetch.
+   A missing file just fails silently.                                     */
 const MUSIC = { title:'title.mp3', play:'bg.mp3', victory:'win.mp3', gameover:'ded.mp3' };
 let curTrack = null, curTrackName = '', desiredTrack = '', musicToken = 0;
 let musicOn = localStorage.getItem('lot_music') !== 'off';
-async function playMusic(name) {
+function playMusic(name) {
   desiredTrack = name;                         /* remembered so toggling on resumes the right track */
   if (curTrackName === name && curTrack) return;
   const token = ++musicToken;
@@ -403,14 +82,11 @@ async function playMusic(name) {
   curTrackName = '';
   const file = MUSIC[name];
   if (!file || !musicOn) return;
-  try {
-    const head = await fetch('/' + file, { method: 'HEAD' });
-    if (!head.ok) return;
-  } catch { return; }
-  if (token !== musicToken || !musicOn) return; /* screen or setting changed while probing */
-  const a = new Audio('/' + file);
+  if (token !== musicToken || !musicOn) return;
+  const a = new Audio(file);
   a.loop = (name === 'title' || name === 'play');
   a.volume = 0.55;
+  a.addEventListener('error', () => { if (curTrack === a) { curTrack = null; curTrackName = ''; } });
   curTrack = a;
   curTrackName = name;
   a.play().catch(() => {});                    /* autoplay-blocked until a gesture */
@@ -1097,13 +773,13 @@ function renderPanorama(lord, time) {
 
   /* location text, LoM style */
   const here = tileAt(lord.x, lord.y);
-  const atStr = here.place ? \`at the \${here.place.name}\` : (TERRAIN_AT[here.t] || 'on the plains');
+  const atStr = here.place ? `at the ${here.place.name}` : (TERRAIN_AT[here.t] || 'on the plains');
   let aheadStr = 'the open plains';
   for (let d = 1; d <= 5; d++) {
     const tx = lord.x + fwd.dx * d, ty = lord.y + fwd.dy * d;
     const t = tileAt(tx, ty);
     if (!t) { aheadStr = 'the mountains'; break; }
-    if (t.place) { aheadStr = \`the \${t.place.name}\`; break; }
+    if (t.place) { aheadStr = `the ${t.place.name}`; break; }
     if (t.t !== 'plains') { aheadStr = TERRAIN_AHEAD[t.t]; break; }
   }
   g.save();
@@ -1113,11 +789,11 @@ function renderPanorama(lord, time) {
   g.fillText(lord.name.toUpperCase(), 18, 32);
   g.fillStyle = '#e6e0f2';
   g.font = 'italic 15px Georgia, serif';
-  g.fillText(\`stands \${atStr}, looking \${DIRNAMES[lord.face]} to \${aheadStr}.\`, 18, 54);
+  g.fillText(`stands ${atStr}, looking ${DIRNAMES[lord.face]} to ${aheadStr}.`, 18, 54);
   g.fillStyle = '#c0b8dc';
   g.font = '13px Georgia, serif';
   const hrs = lord.ap;
-  g.fillText(\`Day \${state.day} — \${phaseName(hour)}. \${hrs > 0 ? hrs + ' hours of daylight remain.' : 'Night has come; you must rest.'}\`, 18, 74);
+  g.fillText(`Day ${state.day} — ${phaseName(hour)}. ${hrs > 0 ? hrs + ' hours of daylight remain.' : 'Night has come; you must rest.'}`, 18, 74);
   if (hordeNear) {
     g.fillStyle = '#ff8f9e';
     g.font = '600 14px Georgia, serif';
@@ -1288,7 +964,7 @@ function renderMap() {
     if (tile.t === 'rift' && world.riftKnown) {
       const pu = 0.6 + 0.4 * Math.sin(performance.now() / 300);
       mg.fillStyle = rgba([233, 92, 255], pu);
-      mg.font = \`\${ts + 7}px serif\`; mg.textAlign = 'center';
+      mg.font = `${ts + 7}px serif`; mg.textAlign = 'center';
       mg.fillText('✦', px + ts/2, pyy + ts - 1);
       mg.textAlign = 'left';
     }
@@ -1320,16 +996,16 @@ function updateHUD() {
   drawPortrait(l);
   const pips = '●'.repeat(l.ap) + '○'.repeat(AP_PER_DAY - l.ap);
   $('lordInfo').innerHTML =
-    \`<span class="nm">\${l.name}</span><br><span class="tt">\${l.title}</span><br>\` +
-    \`⚔ \${l.war} warriors &nbsp;♞ \${l.rid} riders<br>\` +
-    \`<span style="color:#8fd0a0">\${pips}</span> &nbsp;<span style="color:#6e668e">(lord \${state.active + 1}/\${state.lords.filter(x=>x.alive).length})</span>\`;
+    `<span class="nm">${l.name}</span><br><span class="tt">${l.title}</span><br>` +
+    `⚔ ${l.war} warriors &nbsp;♞ ${l.rid} riders<br>` +
+    `<span style="color:#8fd0a0">${pips}</span> &nbsp;<span style="color:#6e668e">(lord ${state.active + 1}/${state.lords.filter(x=>x.alive).length})</span>`;
   const host = totalStr() | 0;
   const near = hostNearRift() | 0;
   $('hudRight').innerHTML =
-    \`<span class="day">Day \${Math.min(state.day, DAY_LIMIT)} of \${DAY_LIMIT}</span><br>\` +
-    \`Host strength: <b style="color:#e8d9a0">\${host}</b><br>\` +
-    \`<span class="qi">\${world.riftKnown ? \`At the Rift: \${near} / \${SEAL_STRENGTH} needed\` : \`Seek the Abyssal Rift — \${SEAL_STRENGTH} spears must gather\`}</span><br>\` +
-    \`<span id="padInfo">\${padConnected ? '🎮 gamepad ready' : ''}</span>\`;
+    `<span class="day">Day ${Math.min(state.day, DAY_LIMIT)} of ${DAY_LIMIT}</span><br>` +
+    `Host strength: <b style="color:#e8d9a0">${host}</b><br>` +
+    `<span class="qi">${world.riftKnown ? `At the Rift: ${near} / ${SEAL_STRENGTH} needed` : `Seek the Abyssal Rift — ${SEAL_STRENGTH} spears must gather`}</span><br>` +
+    `<span id="padInfo">${padConnected ? '🎮 gamepad ready' : ''}</span>`;
 }
 
 /* ================================================================ MODALS */
@@ -1363,13 +1039,13 @@ function tryForward() {
   const nx = l.x + fwd.dx, ny = l.y + fwd.dy;
   const t = tileAt(nx, ny);
   if (!t || t.t === 'mountains') {
-    showModal(\`<h3>No Way Through</h3>The mountains bar your path. You must find another way.\`);
+    showModal(`<h3>No Way Through</h3>The mountains bar your path. You must find another way.`);
     return;
   }
   let cost = MOVE_COST[t.t] || 1;
   if (t.corrupt) cost += 1;
   if (l.ap < cost) {
-    showModal(\`<h3>Night Draws Near</h3>\${l.name} is too weary to go on. Press <b>R</b> to rest until dawn.\`);
+    showModal(`<h3>Night Draws Near</h3>${l.name} is too weary to go on. Press <b>R</b> to rest until dawn.`);
     return;
   }
   /* battle bars the way */
@@ -1400,9 +1076,9 @@ function moveLordTo(l, nx, ny, cost) {
         if (p.name === 'Tower of the Seer' || p.name === 'Watchtower of Morn') {
           world.riftKnown = true;
           reveal(RIFT_X, RIFT_Y, 2);
-          showModal(\`<h3>\${p.name}</h3><span class="arc">Visions swirl in the high chamber…</span><br>The Rift is revealed upon your map — far to the <b>east</b>, wreathed in blighted land. Only a host of <b>\${SEAL_STRENGTH}</b> spears may seal it.\`);
+          showModal(`<h3>${p.name}</h3><span class="arc">Visions swirl in the high chamber…</span><br>The Rift is revealed upon your map — far to the <b>east</b>, wreathed in blighted land. Only a host of <b>${SEAL_STRENGTH}</b> spears may seal it.`);
         } else {
-          showModal(\`<h3>\${p.name}</h3>From the heights you survey the land, and your map grows.\`);
+          showModal(`<h3>${p.name}</h3>From the heights you survey the land, and your map grows.`);
         }
       }
     }
@@ -1416,10 +1092,10 @@ function moveLordTo(l, nx, ny, cost) {
       });
       state.stats.recruited++;
       showModal(
-        \`<h3>\${rec.name} \${rec.title} joins the host!</h3>\` +
-        \`<span class="good">⚔ \${rec.war} warriors and ♞ \${rec.rid} riders swear their swords to the Quest.</span><br>\` +
-        \`<i>"The Abyss shall not have these lands while we draw breath."</i><br>\` +
-        \`<small style="color:#9d95c0">Press TAB to command each lord in turn.</small>\`);
+        `<h3>${rec.name} ${rec.title} joins the host!</h3>` +
+        `<span class="good">⚔ ${rec.war} warriors and ♞ ${rec.rid} riders swear their swords to the Quest.</span><br>` +
+        `<i>"The Abyss shall not have these lands while we draw breath."</i><br>` +
+        `<small style="color:#9d95c0">Press TAB to command each lord in turn.</small>`);
     }
   }
   updateHUD();
@@ -1429,8 +1105,8 @@ function attemptSeal(l) {
   if (host >= SEAL_STRENGTH) {
     state.endAnim = performance.now() / 1000;
     goEnd('victory',
-      \`With \${host | 0} spears gathered at the brink, \${l.name} casts the Word of Dawn into the deep. \` +
-      \`The Abyss howls — and the Rift seals shut forever.\`);
+      `With ${host | 0} spears gathered at the brink, ${l.name} casts the Word of Dawn into the deep. ` +
+      `The Abyss howls — and the Rift seals shut forever.`);
   } else {
     l.war = Math.max(1, Math.round(l.war * 0.8));
     l.rid = Math.max(0, Math.round(l.rid * 0.8));
@@ -1438,9 +1114,9 @@ function attemptSeal(l) {
     l.x = clamp(l.x + back.dx, 1, MAPW - 2);
     l.y = clamp(l.y + back.dy, 1, MAPH - 2);
     showModal(
-      \`<h3>The Abyss Roars</h3>\` +
-      \`<span class="bad">Your host of \${host | 0} is too few — a wall of shadow hurls you back, and warriors are lost to the deep.</span><br>\` +
-      \`Gather <b>\${SEAL_STRENGTH}</b> spears within sight of the Rift, then enter it once more.\`);
+      `<h3>The Abyss Roars</h3>` +
+      `<span class="bad">Your host of ${host | 0} is too few — a wall of shadow hurls you back, and warriors are lost to the deep.</span><br>` +
+      `Gather <b>${SEAL_STRENGTH}</b> spears within sight of the Rift, then enter it once more.`);
     if (!state.lords.some(x => x.alive)) queueEnd('gameover', 'The last of the free lords was swallowed by the Abyss.');
   }
 }
@@ -1466,8 +1142,8 @@ function battle(stack, enemy, enemyAttacks, after) {
     }
     world.enemies = world.enemies.filter(e => e !== enemy);
     state.stats.battles++;
-    html = \`<h3>Victory in Battle!</h3><span class="good">\${names} \${stack.length > 1 ? 'have' : 'has'} broken an Abyssal horde of \${enemy.str | 0}.</span><br>\` +
-           \`<span class="bad">\${lost} of your company fell in the fighting.</span>\`;
+    html = `<h3>Victory in Battle!</h3><span class="good">${names} ${stack.length > 1 ? 'have' : 'has'} broken an Abyssal horde of ${enemy.str | 0}.</span><br>` +
+           `<span class="bad">${lost} of your company fell in the fighting.</span>`;
   } else {
     let lost = 0;
     const frac = 0.45 + rnd() * 0.2;
@@ -1478,8 +1154,8 @@ function battle(stack, enemy, enemyAttacks, after) {
     }
     enemy.str = Math.round(enemy.str * 0.6);
     const dead = stack.filter(l => !l.alive);
-    html = \`<h3>Driven Back!</h3><span class="bad">The horde is too fierce — \${lost} of your company are slain.</span>\` +
-           (dead.length ? \`<br><span class="bad">\${dead.map(l => l.name).join(', ')} \${dead.length > 1 ? 'have' : 'has'} fallen forever.</span>\` : '');
+    html = `<h3>Driven Back!</h3><span class="bad">The horde is too fierce — ${lost} of your company are slain.</span>` +
+           (dead.length ? `<br><span class="bad">${dead.map(l => l.name).join(', ')} ${dead.length > 1 ? 'have' : 'has'} fallen forever.</span>` : '');
   }
   showModal(html, () => {
     fixActiveLord();
@@ -1560,12 +1236,12 @@ function doRest() {
     notes.push('<span class="arc">The purple blight spreads ever westward…</span>');
   }
   if (state.day > DAY_LIMIT) {
-    queueEnd('gameover', \`Ninety days have passed. The Rift yawns too wide to ever be sealed, and shadow falls upon the world.\`);
+    queueEnd('gameover', `Ninety days have passed. The Rift yawns too wide to ever be sealed, and shadow falls upon the world.`);
   } else if (state.day === DAY_LIMIT - 9) {
-    notes.push(\`<span class="bad">Only \${DAY_LIMIT - state.day} days remain!</span>\`);
+    notes.push(`<span class="bad">Only ${DAY_LIMIT - state.day} days remain!</span>`);
   }
 
-  showModal(\`<h3>Night Falls — Day \${Math.min(state.day, DAY_LIMIT)}</h3>The free lords rest, and the Abyss stirs.<br>\${notes.join('<br>') || 'The night passes quietly.'}\`);
+  showModal(`<h3>Night Falls — Day ${Math.min(state.day, DAY_LIMIT)}</h3>The free lords rest, and the Abyss stirs.<br>${notes.join('<br>') || 'The night passes quietly.'}`);
   for (const f of nightFights) battle(f.stack, f.enemy, true, null);
   updateHUD();
 }
@@ -1591,11 +1267,11 @@ function startGame() {
   syncOverlays();
   playMusic('play');
   showModal(
-    \`<h3>The Quest of the Rift</h3>\` +
-    \`<i>"Ride east, Athelorn. Rally every lord who yet stands free — Ithrilan foretold that only a host of \` +
-    \`<b>\${SEAL_STRENGTH} spears</b>, gathered at the very brink, can seal the Abyssal Rift. \` +
-    \`You have <b>\${DAY_LIMIT} days</b> before the corruption swallows the Citadel of Dawn."</i><br>\` +
-    \`<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, and consult your map with M.</small>\`);
+    `<h3>The Quest of the Rift</h3>` +
+    `<i>"Ride east, Athelorn. Rally every lord who yet stands free — Ithrilan foretold that only a host of ` +
+    `<b>${SEAL_STRENGTH} spears</b>, gathered at the very brink, can seal the Abyssal Rift. ` +
+    `You have <b>${DAY_LIMIT} days</b> before the corruption swallows the Citadel of Dawn."</i><br>` +
+    `<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, and consult your map with M.</small>`);
   updateHUD();
 }
 function goEnd(outcome, cause) {
@@ -1615,9 +1291,9 @@ function goEnd(outcome, cause) {
     ? '<br><b style="color:#ffe9a8">Congratulations, Lord of Twilight — the free lands sing your name!</b>'
     : '<br><i>Yet legends say the Quest may be attempted again…</i>');
   $('endStats').innerHTML =
-    \`Days on the road: \${days} &nbsp;·&nbsp; Lords rallied: \${state.stats.recruited + 1}\` +
-    \`<br>Battles won: \${state.stats.battles} &nbsp;·&nbsp; Host remaining: \${totalStr() | 0}\` +
-    \`<br><b style="color:#ffd98a">SCORE: \${state.finalScore}</b>\`;
+    `Days on the road: ${days} &nbsp;·&nbsp; Lords rallied: ${state.stats.recruited + 1}` +
+    `<br>Battles won: ${state.stats.battles} &nbsp;·&nbsp; Host remaining: ${totalStr() | 0}` +
+    `<br><b style="color:#ffd98a">SCORE: ${state.finalScore}</b>`;
   $('scoreRow').style.display = '';
   $('nameIn').value = localStorage.getItem('lot_name') || '';
   $('endScores').innerHTML = 'Fetching the annals…';
@@ -1625,17 +1301,19 @@ function goEnd(outcome, cause) {
   syncOverlays();
 }
 
-/* ============================================================ HIGH SCORES */
+/* ============================================================ HIGH SCORES
+   Persisted by the Electron main process (the one external file:
+   highscores.txt in the per-user data dir), reached over a contextBridge
+   API exposed as window.lotScores. Falls back gracefully if absent.       */
 async function fetchScores() {
-  const res = await fetch('/api/scores');
-  if (!res.ok) throw new Error('bad status');
-  return (await res.json()).scores || [];
+  if (!window.lotScores) return [];
+  return (await window.lotScores.get()).scores || [];
 }
 function renderScoreList(scores, rank) {
   const el = $('endScores');
   if (!scores.length) { el.innerHTML = '<i>No names yet stand in the annals. Be the first!</i>'; return; }
   el.innerHTML = '<b>— THE ANNALS OF TWILIGHT —</b><br>' + scores.slice(0, 10).map((s, i) =>
-    \`<span class="\${i === rank ? 'me' : ''}">\${String(i + 1).padStart(2, ' ')}. \${s.name.padEnd(16, '·')} \${String(s.score).padStart(6, ' ')}  \${s.outcome === 'victory' ? '✦' : '✝'} day \${s.days}</span>\`
+    `<span class="${i === rank ? 'me' : ''}">${String(i + 1).padStart(2, ' ')}. ${s.name.padEnd(16, '·')} ${String(s.score).padStart(6, ' ')}  ${s.outcome === 'victory' ? '✦' : '✝'} day ${s.days}</span>`
   ).join('<br>');
 }
 async function submitScore() {
@@ -1645,11 +1323,10 @@ async function submitScore() {
   state.scoreSent = true;
   $('scoreRow').style.display = 'none';
   try {
-    const res = await fetch('/api/scores', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, score: state.finalScore, days: Math.min(state.day, DAY_LIMIT), outcome: state.outcome }),
+    if (!window.lotScores) throw new Error('no scores bridge');
+    const data = await window.lotScores.add({
+      name, score: state.finalScore, days: Math.min(state.day, DAY_LIMIT), outcome: state.outcome,
     });
-    const data = await res.json();
     renderScoreList(data.scores || [], data.rank);
   } catch {
     $('endScores').innerHTML = '<i>The annals are unreachable — your deed lives on in memory alone.</i>';
@@ -1659,7 +1336,7 @@ async function loadTitleScores() {
   try {
     const scores = await fetchScores();
     $('titleScores').innerHTML = scores.length
-      ? '<b>THE ANNALS:</b> ' + scores.slice(0, 5).map((s, i) => \`\${i + 1}. \${s.name} \${s.score}\${s.outcome === 'victory' ? '✦' : ''}\`).join(' &nbsp;·&nbsp; ')
+      ? '<b>THE ANNALS:</b> ' + scores.slice(0, 5).map((s, i) => `${i + 1}. ${s.name} ${s.score}${s.outcome === 'victory' ? '✦' : ''}`).join(' &nbsp;·&nbsp; ')
       : '<i>No legends yet written — be the first.</i>';
   } catch { $('titleScores').innerHTML = ''; }
 }
@@ -1775,58 +1452,3 @@ loadTitleScores();
 playMusic('title');
 updateMusicUI();
 requestAnimationFrame(frame);
-</script>
-</body>
-</html>
-`;
-
-/* -------------------------------- server -------------------------------- */
-const server = http.createServer((req, res) => {
-  const url = req.url.split('?')[0];
-
-  if (url === '/api/scores' && req.method === 'GET') {
-    return sendJSON(res, 200, { scores: loadScores().slice(0, TOP_N) });
-  }
-  if (url === '/api/scores' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk;
-      if (body.length > 4096) req.destroy();
-    });
-    req.on('end', () => {
-      let parsed;
-      try { parsed = JSON.parse(body); } catch { return sendJSON(res, 400, { error: 'bad json' }); }
-      try {
-        return sendJSON(res, 200, addScore(sanitizeRecord(parsed)));
-      } catch (err) {
-        console.error('score write failed:', err.message);
-        return sendJSON(res, 500, { error: 'could not save score' });
-      }
-    });
-    return;
-  }
-
-  const music = MUSIC_FILES.find(m => url === '/' + m);
-  if (music && (req.method === 'GET' || req.method === 'HEAD')) {
-    return serveMusic(req, res, music);
-  }
-
-  if (req.method === 'GET' && (url === '/' || url === '/index.html')) {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(PAGE) });
-    return res.end(PAGE);
-  }
-  if (url === '/favicon.ico') { res.writeHead(204); return res.end(); }
-
-  res.writeHead(404, { 'Content-Type': 'text/plain' });
-  res.end('not found');
-});
-
-server.listen(PORT, () => {
-  const found = MUSIC_FILES.filter(m => fs.existsSync(path.join(__dirname, m)));
-  console.log('');
-  console.log('  \u2726 LORDS OF TWILIGHT \u2726');
-  console.log('  The realm awaits at  http://localhost:' + PORT);
-  console.log('  High scores kept in  ' + SCORE_FILE);
-  console.log('  Music: ' + (found.length ? found.join(', ') : 'none found (drop title.mp3 / bg.mp3 / win.mp3 / ded.mp3 beside twilight.js)'));
-  console.log('');
-});

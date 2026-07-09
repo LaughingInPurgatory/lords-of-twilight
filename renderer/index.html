@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lords of Twilight</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; }
+  body {
+    background: radial-gradient(ellipse at 50% 30%, #191527 0%, #0b0a12 65%, #050508 100%);
+    color:#cfc9e8; font-family: Georgia, 'Times New Roman', serif;
+    display:flex; align-items:center; justify-content:center; min-height:100vh; padding:12px;
+    user-select:none; -webkit-user-select:none;
+  }
+  #frame {
+    width:min(97vw, 1004px);
+    border:3px double #8f7a3f; border-radius:6px; overflow:hidden;
+    box-shadow: 0 0 40px rgba(120,80,200,.18), 0 0 120px rgba(0,0,0,.8), inset 0 0 30px rgba(0,0,0,.6);
+    background:#0a0a12;
+  }
+  #stage { position:relative; }
+  #scene { display:block; width:100%; height:auto; cursor:pointer; }
+  /* subtle retro scanlines + vignette */
+  #scan {
+    position:absolute; inset:0; pointer-events:none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 1px, transparent 1px 3px),
+      radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,.35) 100%);
+    mix-blend-mode:multiply;
+  }
+  .ov { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; z-index:5; }
+  .hidden { display:none !important; }
+
+  /* ---------- modal ---------- */
+  #ovModal { background:rgba(5,5,10,.45); }
+  #modalBox {
+    max-width:600px; width:86%; background:linear-gradient(180deg,#1c1a2c,#121020);
+    border:2px solid #8f7a3f; border-radius:6px; padding:22px 26px; text-align:center;
+    box-shadow:0 0 40px rgba(0,0,0,.8); font-size:17px; line-height:1.55;
+  }
+  #modalBox h3 { color:#ffd98a; letter-spacing:3px; margin-bottom:10px; font-variant:small-caps; }
+  #modalBox .good { color:#9fe6a0; } #modalBox .bad { color:#ff9c9c; } #modalBox .arc { color:#d9a7ff; }
+  #modalBox .cont { margin-top:16px; }
+
+  /* ---------- map ---------- */
+  #ovMap { background:rgba(5,5,10,.72); }
+  .mapwrap { background:#100e1c; border:2px solid #8f7a3f; border-radius:6px; padding:8px 12px; text-align:center; }
+  .mapwrap h3 { color:#ffd98a; letter-spacing:5px; font-variant:small-caps; margin-bottom:4px; font-size:15px; }
+  #mapc { border:1px solid #3a3654; background:#07060d; image-rendering:pixelated; }
+  #maplegend { font:10px 'Courier New', monospace; color:#9d95c0; margin:4px 0 6px; }
+  .mapwrap .btn { padding:5px 16px; font-size:13px; margin:0; }
+
+  /* ---------- title ---------- */
+  #ovTitle { flex-direction:column; text-align:center; background:linear-gradient(180deg, rgba(4,3,10,.25), rgba(4,3,10,.55) 78%); }
+  #ovTitle h1 {
+    font-size:62px; letter-spacing:10px; font-variant:small-caps; font-weight:700;
+    background:linear-gradient(180deg,#fff3cf 5%,#e8c069 45%,#8a5c1d 90%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+    filter:drop-shadow(0 3px 14px rgba(255,180,60,.35));
+    margin-bottom:2px;
+  }
+  #ovTitle .sub { color:#b7a0e8; letter-spacing:6px; font-variant:small-caps; font-size:16px; margin-bottom:14px; text-shadow:0 0 12px rgba(150,90,255,.5); }
+  #ovTitle .lore { max-width:640px; width:88%; color:#d8d2ea; font-size:15px; line-height:1.5; font-style:italic; text-shadow:0 1px 4px #000; }
+  #ovTitle .legend {
+    display:flex; gap:26px; margin-top:14px; font:12px 'Courier New', monospace; color:#a79ecb; text-align:left;
+    background:rgba(10,8,20,.55); border:1px solid #3a3654; border-radius:6px; padding:10px 16px;
+  }
+  #ovTitle .legend b { color:#e8d9a0; display:block; margin-bottom:3px; letter-spacing:2px; }
+  #titleScores { margin-top:12px; font:12px 'Courier New', monospace; color:#c8bfe8; min-height:16px; }
+  #titleScores b { color:#ffd98a; letter-spacing:2px; }
+
+  /* ---------- end screens ---------- */
+  #ovEnd { flex-direction:column; text-align:center; }
+  #endBox { background:rgba(10,8,20,.72); border:2px solid #8f7a3f; border-radius:8px; padding:24px 40px; max-width:640px; width:88%; }
+  #endTitle { font-size:44px; letter-spacing:8px; font-variant:small-caps; margin-bottom:6px; }
+  .victory #endTitle { color:#ffe9a8; text-shadow:0 0 24px rgba(255,200,80,.65); }
+  .gameover #endTitle { color:#ff8f8f; text-shadow:0 0 24px rgba(255,60,60,.5); }
+  #endCause { color:#c9c2e2; font-style:italic; margin-bottom:14px; font-size:16px; line-height:1.5; }
+  #endStats { font:14px 'Courier New', monospace; color:#b7e2c0; margin-bottom:14px; line-height:1.7; }
+  #scoreRow { margin-bottom:12px; }
+  #nameIn {
+    background:#0d0b18; color:#ffd98a; border:1px solid #8f7a3f; border-radius:4px;
+    font:16px 'Courier New', monospace; padding:8px 10px; width:180px; text-align:center; letter-spacing:2px;
+  }
+  #endScores { font:13px 'Courier New', monospace; color:#c8bfe8; margin:8px 0 14px; line-height:1.65; min-height:20px; }
+  #endScores .me { color:#ffd98a; }
+  #endScores b { color:#ffd98a; letter-spacing:2px; }
+
+  .btn {
+    background:linear-gradient(180deg,#3a3a55,#222238); border:1px solid #8f7a3f; color:#efe2b4;
+    padding:10px 24px; font:600 16px Georgia, serif; letter-spacing:3px; font-variant:small-caps;
+    cursor:pointer; border-radius:4px; margin:4px 6px;
+    box-shadow:0 2px 10px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.09);
+    transition:filter .12s, transform .06s;
+  }
+  .btn:hover { filter:brightness(1.35); } .btn:active { transform:translateY(1px); }
+  .btn.big { font-size:20px; padding:12px 36px; }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    display:flex; align-items:center; gap:16px; padding:10px 16px;
+    background:linear-gradient(180deg,#16142a,#0c0b16);
+    border-top:2px solid #43405f; min-height:104px;
+  }
+  #portrait { border:2px solid #8f7a3f; border-radius:4px; background:#0a0a14; flex:none; }
+  #lordInfo { font:13px 'Courier New', monospace; line-height:1.5; min-width:190px; }
+  #lordInfo .nm { color:#ffd98a; font-size:14px; letter-spacing:1px; }
+  #lordInfo .tt { color:#9d95c0; font-style:italic; }
+  #hudMid { display:flex; align-items:center; gap:10px; flex:1; justify-content:center; }
+  .cbtn {
+    width:52px; height:52px; border-radius:50%; border:2px solid #8f7a3f; cursor:pointer;
+    background:radial-gradient(circle at 35% 30%, #3d3b5e, #191728); color:#efe2b4; font-size:22px;
+    box-shadow:0 2px 8px rgba(0,0,0,.7); transition:filter .12s;
+  }
+  .cbtn:hover { filter:brightness(1.4); } .cbtn:active { transform:translateY(1px); }
+  .sbtn {
+    border:1px solid #57517a; background:linear-gradient(180deg,#28263e,#181628); color:#c6bfe4;
+    font:12px 'Courier New', monospace; padding:7px 10px; border-radius:4px; cursor:pointer; letter-spacing:1px;
+  }
+  .sbtn:hover { filter:brightness(1.4); }
+  #hudRight { font:12px 'Courier New', monospace; text-align:right; line-height:1.6; min-width:200px; color:#a79ecb; }
+  #hudRight .qi { color:#d9a7ff; }
+  #hudRight .day { color:#e8d9a0; font-size:13px; }
+  #padInfo { color:#6fb987; }
+</style>
+</head>
+<body>
+  <div id="frame">
+    <div id="stage">
+      <canvas id="scene" width="960" height="540"></canvas>
+      <div id="scan"></div>
+
+      <div id="ovMap" class="ov hidden">
+        <div class="mapwrap">
+          <h3>The Lands of Twilight</h3>
+          <canvas id="mapc" width="540" height="396"></canvas>
+          <div id="maplegend">
+            <span style="color:#e8d9a0">■</span> keep &nbsp;
+            <span style="color:#d8b46a">●</span> village &nbsp;
+            <span style="color:#9adfe8">▲</span> tower &nbsp;
+            <span style="color:#ffd24a">◆</span> your lords &nbsp;
+            <span style="color:#ff5c5c">●</span> abyssal horde &nbsp;
+            <span style="color:#e95cff">✦</span> the rift &nbsp;
+            <span style="color:#7a4a9e">▒</span> corruption
+          </div>
+          <button class="btn" data-act="toggleMap">Close &nbsp;(M)</button>
+        </div>
+      </div>
+
+      <div id="ovModal" class="ov hidden">
+        <div id="modalBox"></div>
+      </div>
+
+      <div id="ovEnd" class="ov hidden">
+        <div id="endBox">
+          <div id="endTitle"></div>
+          <div id="endCause"></div>
+          <div id="endStats"></div>
+          <div id="scoreRow">
+            <input id="nameIn" maxlength="16" placeholder="YOUR NAME">
+            <button class="btn" id="submitScore" data-act="submitScore">Carve Your Name</button>
+          </div>
+          <div id="endScores"></div>
+          <button class="btn big" data-act="restart">Play Again</button>
+          <button class="btn" data-act="toTitle">Title</button>
+        </div>
+      </div>
+
+      <div id="ovTitle" class="ov">
+        <h1>Lords of Twilight</h1>
+        <div class="sub">— a tale of the third age of midnight —</div>
+        <div class="lore">
+          Long after Doomdark fell and the Ice Crown was shattered, a wound has opened in the deep east:
+          <b>the Abyssal Rift</b>, and from it crawl creatures of living shadow.
+          Ride forth, rally the scattered lords of the free lands, and gather a host mighty enough
+          to seal the Rift &mdash; before the corruption swallows the Citadel of Dawn.
+        </div>
+        <button class="btn big" data-act="start" style="margin-top:18px">Begin the Quest</button>
+        <button class="btn" data-act="toggleMusic" id="musicBtnTitle" style="margin-top:6px;font-size:13px;padding:6px 16px">♪ Music: On</button>
+        <div class="legend">
+          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr; or W forward<br>R rest &nbsp;M map &nbsp;Tab next lord<br>Enter confirm &nbsp;Esc close</div>
+          <div><b>MOUSE</b>click sides of view: turn<br>click centre: forward<br>use the buttons below</div>
+          <div><b>GAMEPAD</b>d-pad/stick: turn + forward<br>A confirm &nbsp;B close &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
+        </div>
+        <div id="titleScores">&nbsp;</div>
+      </div>
+    </div>
+
+    <div id="hud">
+      <canvas id="portrait" width="72" height="72"></canvas>
+      <div id="lordInfo"></div>
+      <div id="hudMid">
+        <button class="cbtn" data-act="turnLeft"  title="Turn left (←)">&#10554;</button>
+        <button class="cbtn" data-act="forward"   title="Forward (↑)" style="font-size:26px">&#9650;</button>
+        <button class="cbtn" data-act="turnRight" title="Turn right (→)">&#10555;</button>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-left:10px">
+          <button class="sbtn" data-act="rest" title="Rest until dawn (R)">REST&nbsp;(R)</button>
+          <button class="sbtn" data-act="toggleMap" title="Consult the map (M)">MAP&nbsp;(M)</button>
+          <button class="sbtn" data-act="nextLord" title="Command the next lord (Tab)">NEXT&nbsp;LORD</button>
+          <button class="sbtn" data-act="toggleMusic" id="musicBtnHud" title="Toggle music">♪&nbsp;ON</button>
+        </div>
+      </div>
+      <div id="hudRight"></div>
+    </div>
+  </div>
+<script src="game.js"></script>
+</body>
+</html>

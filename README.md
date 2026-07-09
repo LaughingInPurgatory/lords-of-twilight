@@ -2,40 +2,54 @@
 
 *A tale of the Third Age of Midnight*
 
-A browser strategy/adventure game in the spirit of Mike Singleton's **Lords of Midnight** and **Doomdark's Revenge** — first-person panorama exploration, a compass, and a realm to conquer. This time the enemy isn't Doomdark's army: it's the Abyss itself, pouring through a Rift torn into the world.
+A strategy/adventure game in the spirit of Mike Singleton's **Lords of Midnight** and **Doomdark's Revenge** — first-person panorama exploration, a compass, and a realm to conquer. This time the enemy isn't Doomdark's army: it's the Abyss itself, pouring through a Rift torn into the world.
 
-The entire game — server and client — lives in a single file, `twilight.js`. No build step, no `npm install`, no framework. Just Node.
+It's a **fully self-contained desktop app** built with Electron. It opens in its own window — no browser, no server, nothing else to install. Everything (game, artwork, music) is bundled inside the app; the **only** file it ever writes is your high-score table.
 
-## Running it
+## Play
+
+Grab the installer for your platform — each opens the game in its own window:
+
+| Platform | File |
+|----------|------|
+| **Windows** | `Lords of Twilight-<version>-win-x64.exe` (installer) or `…win-x64.zip` (unzip &amp; run `Lords of Twilight.exe`) |
+| **macOS** | `Lords of Twilight-<version>-mac-arm64.dmg` (Apple Silicon) or `…mac-x64.dmg` (Intel) |
+| **Linux** | `Lords of Twilight-<version>-linux-x86_64.AppImage` (or `…arm64.AppImage`) — `chmod +x` it, then run |
+
+> The builds are **unsigned**. On macOS the first launch needs right-click → **Open** (or *System Settings → Privacy &amp; Security → Open Anyway*); on Windows SmartScreen, choose **More info → Run anyway**.
+
+Your high scores are saved per-user (e.g. `~/Library/Application Support/Lords of Twilight/highscores.txt` on macOS, `%APPDATA%` on Windows), so they survive reinstalls and updates. That flat text file is the only thing the app writes outside itself — delete it to reset the annals.
+
+The four music tracks (title / gameplay / victory / defeat) are bundled in and play automatically; toggle them on/off from the title screen or the in-game HUD, and your choice is remembered.
+
+## Run from source / build it yourself
+
+You need Node and (for `npm install` only) network access — Electron downloads its platform binaries.
 
 ```bash
-node twilight.js
+npm install            # electron + electron-builder (dev deps only)
+npm start              # run the game in its own window
+npm run icon           # regenerate build/icon.png (optional)
+
+npm run dist:mac       # → dist/*.dmg
+npm run dist:linux     # → dist/*.AppImage
+npm run dist:win       # → dist/*.exe (NSIS installer) + *.zip
 ```
 
-Then open **http://localhost:3210** in a browser.
+`npm run dist` builds all three platforms at once. Cross-building the Windows **NSIS installer** from macOS/Linux works because electron-builder ships its own bundled NSIS + Wine; if that ever fails, `npm run dist:win:nowine` produces just the runnable `.exe`-in-a-`.zip`. Builds default to your machine's CPU architecture — add `--x64` or `--arm64` to target the other.
 
-Want a different port?
+### Project layout
 
-```bash
-PORT=8080 node twilight.js
 ```
-
-### Music (optional)
-
-Drop these files next to `twilight.js` and the game will find and play them automatically — nothing to configure:
-
-| File        | Plays                    |
-|-------------|---------------------------|
-| `title.mp3` | Looping, on the title screen |
-| `bg.mp3`    | Looping, while you play   |
-| `win.mp3`   | On victory                |
-| `ded.mp3`   | On defeat                 |
-
-Missing a file? The game just plays silently for that screen — nothing breaks. Music can also be toggled on/off from the title screen or the in-game HUD, and your preference is remembered.
-
-### High scores
-
-Every run can be saved to a local leaderboard kept in a plain-text file, `highscores.txt`, created next to `twilight.js` the first time someone submits a score. Delete it to reset the annals.
+main.js            Electron main process — window + the high-score file (IPC)
+preload.js         contextBridge exposing the score API to the game
+renderer/
+  index.html       page shell + styles
+  game.js          the entire game (world, renderer, input, logic, screens)
+  *.mp3            bundled music
+scripts/make-icon.js   procedural app icon generator (pure Node)
+build/icon.png     app icon (→ .icns / .ico at build time)
+```
 
 ## How to Play
 

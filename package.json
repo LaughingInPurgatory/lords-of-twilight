@@ -1,0 +1,62 @@
+{
+  "name": "lords-of-twilight",
+  "productName": "Lords of Twilight",
+  "version": "1.1.0",
+  "description": "A retro-modern strategy/adventure game in the spirit of Lords of Midnight — a fully self-contained Electron desktop app.",
+  "author": "schtufbox <gkorbey@gmail.com>",
+  "license": "MIT",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icon": "node scripts/make-icon.js",
+    "dist": "electron-builder -mwl",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis zip",
+    "dist:win:nowine": "electron-builder --win zip",
+    "dist:linux": "electron-builder --linux AppImage"
+  },
+  "devDependencies": {
+    "electron": "^31.7.6",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.schtufbox.lordsoftwilight",
+    "productName": "Lords of Twilight",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "package.json"
+    ],
+    "asarUnpack": ["**/*.mp3"],
+    "mac": {
+      "target": ["dmg"],
+      "category": "public.app-category.games",
+      "icon": "build/icon.png"
+    },
+    "dmg": {
+      "title": "${productName}"
+    },
+    "win": {
+      "target": ["nsis", "zip"],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "Lords of Twilight"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "build/icon.png",
+      "category": "Game",
+      "synopsis": "Rally the free lords and seal the Abyssal Rift."
+    }
+  }
+}
