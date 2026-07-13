@@ -1,57 +1,119 @@
-# CLAUDE.md
+# CLAUDE.md / AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for AI assistants working in this repository.
 
 ## Project
 
-**Lords of Twilight** — a retro-modern browser-style strategy/adventure game in the spirit of Mike Singleton's *Lords of Midnight*, packaged as a **self-contained Electron desktop app**. The foe is Abyssal creatures pouring from a Rift; the player explores a procedurally-generated realm, recruits lords, and gathers a host strong enough to seal the Rift.
+**Lords of Twilight** (v2.2.0) — retro-modern strategy/adventure in the spirit of Mike Singleton’s *Lords of Midnight*, packaged as a **self-contained Electron desktop app**. Abyssal creatures pour from a Rift; the player explores a procedural realm, recruits lords, and gathers a host to seal the Rift.
 
-There is **no server**. The game is loaded directly into an Electron `BrowserWindow` over `file://`. The **only** thing that ever touches the filesystem outside the app bundle is the plain-text high-score database (`highscores.txt`), written to the per-user data dir.
+There is **no server**. The game loads into a `BrowserWindow` over `file://`. Outside the app bundle the process only touches two files in `app.getPath('userData')`:
 
-> History: this began life as a single `twilight.js` Node HTTP server with the client embedded in a template literal. That server was removed; the client was split into normal files and the persistence/audio moved to Electron IPC + bundled assets. If you find references to `twilight.js`, a `PAGE` template literal, or an `/api/scores` HTTP endpoint anywhere, they are stale.
+| File | Purpose |
+|------|---------|
+| `highscores.txt` | Top-10 annals (`score\|name\|days\|outcome\|iso-date` per line) |
+| `savegame.json` | Single-slot quest save (schema version `v: 1`) |
+
+> History: started as a single `twilight.js` HTTP server with the client in a template literal. Server is gone. Stale if you see `twilight.js`, a `PAGE` template, or `/api/scores`.
 
 ## Commands
 
 ```bash
-npm install               # one-time: electron + electron-builder (dev deps only)
-npm start                 # run the game in its own window (electron .)
-npm run icon              # regenerate build/icon.png (pure-Node, no deps)
+npm install               # electron + electron-builder (dev deps only)
+npm start                 # run the game (electron .)
+npm run icon              # regenerate build/icon.png (pure Node)
 
-npm run dist              # build dmg + AppImage + win exe/zip into dist/
-npm run dist:mac          # macOS .dmg  (add --x64 / --arm64 to pick arch)
-npm run dist:linux        # Linux .AppImage
-npm run dist:win          # Windows NSIS installer .exe + portable .zip
+npm run dist              # mac + win + linux (all arches configured in scripts)
+npm run dist:mac          # .dmg arm64 + x64
+npm run dist:linux        # AppImage x64 + arm64
+npm run dist:win          # NSIS + zip, x64 + arm64
+npm run dist:win:nowine   # zip only (both arches)
 
-node --check main.js preload.js renderer/game.js   # syntax check after editing
+# local test builds
+npx electron-builder --mac dir --arm64    # .app only
+npx electron-builder --mac dmg --arm64    # arm64 dmg
+
+node --check main.js preload.js renderer/game.js
+LOT_SMOKE=1 npx electron .                # headless: worldgen + save round-trip → LOT_SMOKE_OK
 ```
 
-There are no tests and no linter. Verify by playing, or headlessly: `LOT_SMOKE=1 npx electron .` boots the app, loads the game, prints `LOT_SMOKE_OK`, and quits. To exercise game logic/scores/audio without a visible window, run a throwaway Electron main that `loadFile`s `renderer/index.html` and drives it via `webContents.executeJavaScript` — all game functions (`dispatch`, `activeLord`, `world`, `state`, `tryGenWorld`, `goEnd`, `submitScore`, …) are top-level globals in the renderer, and `window.lotScores` is the score bridge.
+No unit tests / linter. Verify by play or smoke. Renderer game API is top-level globals (`dispatch`, `world`, `state`, `activeLord`, `serializeGame`, …) for `executeJavaScript`. Bridges: `window.lotScores`, `window.lotSave`, `window.lotApp`.
+
+## Layout
+
+```
+main.js              Electron main — window, scores + save IPC, clean quit
+preload.js           contextBridge only (lotScores / lotSave / lotApp)
+renderer/
+  index.html         shell, CSS, overlays, HUD
+  game.js            entire game (world, render, input, logic, save)
+  *.mp3              title / bg / win / ded
+scripts/make-icon.js pure-Node icon PNG
+build/afterPack.js   macOS ad-hoc codesign after pack
+build/icon.png
+```
 
 ## Architecture
 
-Four source files do the work; the game itself is `renderer/game.js`.
-
-### Main process — `main.js`
-- Owns the **one external file**: `highscores.txt` in `app.getPath('userData')`. Contains the score DB (`loadScores`/`sanitize`/`addScore`, one `score|name|days|outcome|iso-date` record per line, top-10 by score) exposed over `ipcMain.handle('scores:get' | 'scores:add')`. Input is sanitized (printable ASCII, `|`/`\` stripped, lengths capped). Delete the file to reset scores.
-- Creates the `BrowserWindow` (`contextIsolation: true`, `nodeIntegration: false`, `preload.js`) and `loadFile`s `renderer/index.html`. Builds the app menu (New Realm = reload, fullscreen, zoom, devtools). `LOT_SMOKE=1` = headless self-test.
+### Main — `main.js`
+- **Scores**: rewrite top-N on add; names sanitized (printable ASCII, strip `|\\<>&`).
+- **Save IPC**: `save:get` / `save:meta` / `save:write` / `save:clear`; 2 MiB cap; rejects non-`v:1` payloads.
+- **Window**: `contextIsolation`, `sandbox`, no `nodeIntegration`; `loadFile(renderer/index.html)`.
+- **Quit**: single-window game — traffic-light close, last window, and `app:quit` all call `quitApp()` (destroy window → `app.quit` → hard `app.exit(0)` after 400 ms if needed). Do not reintroduce “keep alive on macOS after window close” without product intent.
+- **Menu**: Save/Continue (⌘S / ⌘O → renderer), New Realm (reload), View, Help.
+- **Smoke**: `LOT_SMOKE=1` runs genWorld, play step, serialize/persist/restore, logs `LOT_SMOKE_OK`.
 
 ### Preload — `preload.js`
-The only renderer↔OS bridge: `contextBridge` exposes `window.lotScores = { get(), add(record) }`, both thin `ipcRenderer.invoke` wrappers. Keep this surface minimal.
+Minimal bridge only:
+- `lotScores.get/add`
+- `lotSave.get/meta/write/clear` + `onMenuSave` / `onMenuContinue`
+- `lotApp.quit`
 
-### Renderer — `renderer/index.html` + `renderer/game.js`
-`index.html` is the page shell + inline CSS + DOM overlays; it loads `game.js` via `<script src="game.js">`. `game.js` is a classic (non-module) script — everything is a top-level global, which is intentional for console/`executeJavaScript` testing. Key systems:
-- **Screen state machine**: `state.screen` ∈ `title | play | end` (+ `state.outcome`). DOM overlays (`#ovTitle`, `#ovEnd`, `#ovMap`, `#ovModal`) over one 960×540 canvas; `syncOverlays()` reconciles them. RAF loop renders per-screen: `renderTitle` / `renderPanorama` / `renderVictory` / `renderGameOver`.
-- **Random world gen**: `genWorld(seed)` retries `tryGenWorld` (seeded `mulberry32`) up to 12× then falls back to `FALLBACK_SEED`; every new game rolls a random seed. Invariants: Citadel anchored west, Rift east (`START_X/Y`, `RIFT_X/Y` are mutable globals set per world); a meandering corridor is carved between them; every named place gets an L-shaped pass to the corridor; a BFS **proof-walk** rejects any world where the Rift or any place is unreachable.
-- **Panorama renderer**: the signature LoM view. From the active lord's tile, samples a wedge along `DIRS[face]` (8 facings), depth rows `d = 7→1` painted back-to-front with per-row scale/fog (`rowScale`, `rowY`, `rowPalette`). Per-terrain draw functions take `(x, y, scale, tileX, tileY, palette)`; `tRand(tx,ty,i)` gives stable per-tile variation. Sky/ground from `envColors(hour, doom)`, keyframed over the day and tinted purple by corruption.
-- **Input**: every device funnels into `dispatch(action)` — keyboard (`KEYMAP`), mouse (canvas thirds turn/forward + delegated `[data-act]` buttons), gamepad (edge-detected polling in the RAF loop). New UI action = add a `data-act` button + a `dispatch` case.
-- **Music**: the four tracks are **bundled** in `renderer/` and played with a plain relative `new Audio('title.mp3')` (no fetch/probe). `playMusic(name)` tracks `desiredTrack` even while muted so `setMusic(true)` resumes the right track; on/off persists in `localStorage('lot_music')`; autoplay is unlocked on first pointer/key event.
-- **Scores**: `fetchScores`/`submitScore` call `window.lotScores`; both degrade gracefully if the bridge is absent (e.g. opened outside Electron).
-- **Game loop rules**: lords have `ap` (12/day, terrain-costed); `doRest()` runs the night phase (corruption grows, warbands spawn/prowl/attack, AP resets, lose conditions checked). Win = enter the Rift with ≥ `SEAL_STRENGTH` host strength within 2 tiles (`hostNearRift`). Modals are a queue (`showModal`/`closeModal`); deferred endings go through `queueEnd`/`state.pendingEnd`.
+### Renderer — `game.js` (+ `index.html`)
+Classic non-module script (globals intentional).
 
-### Assets & packaging
-- `renderer/*.mp3` are bundled and `asarUnpack`ed (see `package.json` `build.asarUnpack`) so `file://` audio plays reliably from `app.asar.unpacked`.
-- `scripts/make-icon.js`: pure-Node PNG encoder that regenerates `build/icon.png`; electron-builder converts it to `.icns`/`.ico`. Verify a generated PNG by opening it with the Read tool.
-- Targets: `mac→dmg`, `win→nsis+zip`, `linux→AppImage`. The Windows NSIS installer cross-builds from macOS via electron-builder's bundled Wine. Builds are **unsigned**. `dist/` and `node_modules/` are gitignored.
+| System | Notes |
+|--------|--------|
+| Screens | `state.screen` ∈ `title \| play \| end`; overlays `#ovTitle` `#ovEnd` `#ovMap` `#ovModal` `#ovPause`; `syncOverlays()` |
+| Worldgen | `genWorld` → `tryGenWorld` (mulberry32), 12 attempts + `FALLBACK_SEED`; citadel west / rift east; corridor + L-passes; **BFS** proof-walk |
+| Panorama | LoM wedge on 8 facings, depth `d=7→1`; `cam` pan/zoom/bob/roll on turn/move; pseudo-3D terrain (lit/shade faces); grass/pebbles on ground |
+| Terrain art | Mountains = multi-peak lit/shade/snow; forest = pines + some broadleafs; keeps/villages/towers with side faces |
+| Input | All devices → `dispatch(act)`; keys, canvas thirds, `[data-act]`, gamepad edge-poll |
+| Move | `tryStep(+1/-1)` forward/back; costs from `MOVE_COST` + corrupt; battle if horde on tile |
+| Night | `doRest()`: day++, corruption, spawn/prowl, keep rally, lose checks |
+| Save | `serializeGame` / `applySaveData` / `autoSave` / `continueQuest`; Electron file or `localStorage` fallback; cleared on new game / end |
+| Music | Bundled relative `Audio`; `stopMusic` + cancel RAF on `shutdownRenderer` (pagehide/beforeunload/quit) |
+| Scores | Via `lotScores`; HTML-escape names on display |
 
-### Balance tunables
-Near the top of `renderer/game.js`: `MAPW/MAPH` (60×44), `DAY_LIMIT` (90), `AP_PER_DAY` (12), `SEAL_STRENGTH` (800), `CORRUPT_PER_NIGHT` (0.55 — tuned so corruption reaches the Citadel around day ~80), `MAX_ENEMIES`, `RECRUITS` (the recruitable lords). If you change map size or anchors, keep the corruption pace and `DAY_LIMIT` in step.
+**New action checklist:** `data-act` button (if UI) + `dispatch` case (+ `KEYMAP` / pad map if needed).
+
+### Packaging
+- `asarUnpack`: `**/*.mp3`
+- `afterPack`: ad-hoc sign mac `.app` (no paid Developer ID)
+- Artifacts unsigned; Gatekeeper / SmartScreen notes live in README
+- `dist/`, `node_modules/` gitignored
+
+## Balance tunables (`renderer/game.js` top)
+
+| Constant | Typical | Role |
+|----------|---------|------|
+| `MAPW`/`MAPH` | 60×44 | map size |
+| `DAY_LIMIT` | 100 | calendar cap |
+| `AP_PER_DAY` | 12 | hours of daylight |
+| `SEAL_STRENGTH` | 750 | host needed at Rift |
+| `CORRUPT_PER_NIGHT` | 0.50 | radius growth (~citadel near end of campaign) |
+| `MAX_ENEMIES` | 16 | warband cap |
+| `ENEMY_AGGRO` | 6 | night pursuit Chebyshev range |
+| `ENEMY_SPAWN_EVERY` | 4 | days between spawns |
+| `RALLY_WAR` | citadel/keep/village | night recruit amounts |
+| `BATTLE_WIN_LOSS_CAP` | 0.50 | max fraction lost on victory |
+| `SEAL_FAIL_KEEP` | 0.85 | strength kept after failed seal |
+| `RECRUITS` | array | named lords at places |
+
+Changing map size or anchors → re-tune corruption vs `DAY_LIMIT`.
+
+## Conventions
+- No new deps unless required; game is pure canvas + DOM in the renderer.
+- Keep IPC surface tiny; sanitize anything that hits disk or `innerHTML`.
+- Prefer small diffs in `game.js` over rewrites; globals are deliberate for smoke/console.
+- After substantive edits: `node --check …` and/or `LOT_SMOKE=1 npx electron .`.
+- Do not commit `dist/` or `node_modules/`.

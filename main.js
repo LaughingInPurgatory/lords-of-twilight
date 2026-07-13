@@ -19,6 +19,23 @@ const SAVE_FILE = () => path.join(app.getPath('userData'), 'savegame.json');
 const TOP_N = 10;
 const MAX_SAVE_BYTES = 2 * 1024 * 1024; // 2 MiB hard cap
 let win = null;
+let quitting = false;
+
+/* force a full process exit — games shouldn't linger in the dock after Quit */
+function quitApp() {
+  if (quitting) return;
+  quitting = true;
+  try {
+    if (win && !win.isDestroyed()) {
+      win.removeAllListeners('close');
+      win.destroy();
+    }
+  } catch { /* already gone */ }
+  win = null;
+  app.quit();
+  /* hard stop if something (audio/ipc) keeps the event loop alive */
+  setTimeout(() => { try { app.exit(0); } catch { process.exit(0); } }, 400);
+}
 
 /* ---------------------- plain-text high-score DB ------------------------
    one record per line:  score|name|days|outcome|iso-date
@@ -133,7 +150,7 @@ ipcMain.handle('save:clear', () => {
   try { return clearSave(); }
   catch (err) { return { ok: false, error: err.message }; }
 });
-ipcMain.handle('app:quit', () => app.quit());
+ipcMain.handle('app:quit', () => { quitApp(); return { ok: true }; });
 
 /* ------------------------------- window --------------------------------- */
 function buildMenu() {
@@ -192,6 +209,13 @@ function createWindow() {
     },
   });
   win.once('ready-to-show', () => { if (!SMOKE) win.show(); });
+  win.on('close', (e) => {
+    if (quitting) return;
+    /* red traffic-light / Cmd+W: full quit for a single-window game */
+    e.preventDefault();
+    quitApp();
+  });
+  win.on('closed', () => { win = null; });
   win.webContents.setWindowOpenHandler(({ url }) => {
     // only allow http(s) links out of the app (Help → GitHub, etc.)
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
@@ -239,7 +263,7 @@ function createWindow() {
         app.exit(1);
         return;
       }
-      setTimeout(() => app.quit(), 100);
+      setTimeout(() => quitApp(), 100);
     });
   }
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
@@ -248,7 +272,10 @@ function createWindow() {
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  app.on('activate', () => {
+    if (quitting) return;
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
 });
-// macOS: keep the app alive when the window is closed (re-open from dock)
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('window-all-closed', () => { quitApp(); });
+app.on('before-quit', () => { quitting = true; });

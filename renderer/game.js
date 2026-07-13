@@ -106,13 +106,19 @@ function playMusic(name) {
   curTrackName = name;
   a.play().catch(() => {});                    /* autoplay-blocked until a gesture */
 }
+function stopMusic() {
+  musicToken++;
+  if (curTrack) {
+    try { curTrack.pause(); curTrack.removeAttribute('src'); curTrack.load(); } catch { /* ignore */ }
+    curTrack = null;
+  }
+  curTrackName = '';
+}
 function setMusic(on) {
   musicOn = on;
   localStorage.setItem('lot_music', on ? 'on' : 'off');
   if (!on) {
-    musicToken++;                              /* cancel any in-flight probe */
-    if (curTrack) { curTrack.pause(); curTrack = null; }
-    curTrackName = '';
+    stopMusic();
   } else if (desiredTrack) {
     playMusic(desiredTrack);
   }
@@ -404,6 +410,40 @@ function phaseName(h) {
 
 /* ================================================================= RENDER */
 
+/* camera motion — discrete LoM steps get a short ease so the world feels
+   like it is sliding/rushing past rather than teleporting tile-to-tile.   */
+const cam = {
+  pan: 0, zoom: 0, bob: 0, roll: 0, drift: 0,
+  lastT: 0,
+};
+function kickTurn(dir) {
+  cam.pan = dir * 1.15;
+  cam.roll = dir * 0.055;
+  cam.drift = dir * 0.35;
+}
+function kickMove(sign) {
+  /* +1 forward (zoom in / rush), -1 back (zoom out / fall away) */
+  cam.zoom = sign > 0 ? 0.16 : -0.12;
+  cam.bob = sign > 0 ? 1.0 : 0.7;
+  cam.drift += sign * 0.15;
+}
+function tickCam(time) {
+  const dt = cam.lastT ? Math.min(0.05, time - cam.lastT) : 0.016;
+  cam.lastT = time;
+  const decay = Math.exp(-dt * 7.5);
+  const decaySlow = Math.exp(-dt * 4.2);
+  cam.pan *= decay;
+  cam.zoom *= decay;
+  cam.bob *= decaySlow;
+  cam.roll *= decay;
+  cam.drift *= decaySlow;
+  /* settle tiny residuals so we don't keep transforming forever */
+  if (Math.abs(cam.pan) < 0.001) cam.pan = 0;
+  if (Math.abs(cam.zoom) < 0.0005) cam.zoom = 0;
+  if (Math.abs(cam.bob) < 0.002) cam.bob = 0;
+  if (Math.abs(cam.roll) < 0.0002) cam.roll = 0;
+}
+
 /* ------- environment palette, keyframed across the day, doom-tinted ----- */
 const SKY_KEYS = [
   { h:0,    top:[6,8,26],    bot:[22,26,58],   ground:[16,18,32], fog:[30,34,62]  },
@@ -430,52 +470,138 @@ function envColors(hour, doom) {
     fog:    colLerp(colLerp(a.fog, b.fog, t), purple, dt * 0.30),
   };
   env.sil = env.ground.map(c => c * 0.45);
+  env.grass = colLerp(env.ground, [70, 120, 55], 0.35);
+  env.dirt = colLerp(env.ground, [90, 70, 45], 0.25);
   return env;
 }
 
 /* stars, fixed constellation */
 const STARS = (() => {
   const r = mulberry32(99), s = [];
-  for (let i = 0; i < 80; i++) s.push([r() * W, r() * HORIZON * 0.95, r() * 1.6 + 0.4, r() * 6.28]);
+  for (let i = 0; i < 100; i++) s.push([r() * W, r() * HORIZON * 0.95, r() * 1.8 + 0.35, r() * 6.28]);
   return s;
 })();
 
 function drawSky(env, hour, time) {
-  const grad = g.createLinearGradient(0, 0, 0, HORIZON);
-  grad.addColorStop(0, rgb(env.top)); grad.addColorStop(1, rgb(env.bot));
-  g.fillStyle = grad; g.fillRect(0, 0, W, HORIZON);
+  const grad = g.createLinearGradient(0, 0, 0, HORIZON + 8);
+  grad.addColorStop(0, rgb(env.top));
+  grad.addColorStop(0.55, rgb(colLerp(env.top, env.bot, 0.55)));
+  grad.addColorStop(1, rgb(env.bot));
+  g.fillStyle = grad; g.fillRect(0, 0, W, HORIZON + 2);
 
-  const darkness = clamp((Math.abs(hour - 13) - 6) / 5, 0, 1); /* 1 at deep night */
+  /* soft cloud banks for depth */
+  const cloudA = clamp(1 - Math.abs(hour - 13) / 10, 0, 1) * 0.22;
+  if (cloudA > 0.02) {
+    g.fillStyle = rgba([255, 250, 255], cloudA);
+    for (let i = 0; i < 5; i++) {
+      const cx = ((i * 211 + time * 3 * (i % 2 ? 1 : -1)) % (W + 160)) - 80;
+      const cy = HORIZON * (0.18 + (i % 3) * 0.12);
+      g.beginPath(); g.ellipse(cx, cy, 70 + i * 8, 14 + (i % 2) * 6, 0, 0, 6.29); g.fill();
+      g.beginPath(); g.ellipse(cx + 40, cy + 4, 50, 12, 0, 0, 6.29); g.fill();
+    }
+  }
+
+  const darkness = clamp((Math.abs(hour - 13) - 6) / 5, 0, 1);
   if (darkness > 0.05) {
     for (const [sx, sy, sr, ph] of STARS) {
-      g.globalAlpha = darkness * (0.5 + 0.5 * Math.sin(time * 1.5 + ph));
-      g.fillStyle = '#e8ecff'; g.fillRect(sx, sy, sr, sr);
+      g.globalAlpha = darkness * (0.45 + 0.55 * Math.sin(time * 1.5 + ph));
+      g.fillStyle = '#e8ecff'; g.beginPath(); g.arc(sx, sy, sr * 0.7, 0, 6.29); g.fill();
     }
     g.globalAlpha = 1;
-    /* crescent moon */
-    g.fillStyle = rgba([230, 232, 250], darkness * 0.9);
-    g.beginPath(); g.arc(W * 0.78, HORIZON * 0.3, 22, 0, 6.29); g.fill();
+    const mx = W * 0.78, my = HORIZON * 0.28;
+    const moonG = g.createRadialGradient(mx, my, 2, mx, my, 36);
+    moonG.addColorStop(0, rgba([240, 242, 255], darkness * 0.95));
+    moonG.addColorStop(0.45, rgba([210, 215, 240], darkness * 0.55));
+    moonG.addColorStop(1, 'rgba(200,210,255,0)');
+    g.fillStyle = moonG; g.beginPath(); g.arc(mx, my, 36, 0, 6.29); g.fill();
     g.fillStyle = rgb(env.top);
-    g.beginPath(); g.arc(W * 0.78 + 9, HORIZON * 0.3 - 4, 19, 0, 6.29); g.fill();
+    g.beginPath(); g.arc(mx + 9, my - 4, 18, 0, 6.29); g.fill();
   }
-  if (hour >= 6 && hour <= 20) { /* sun */
+  if (hour >= 6 && hour <= 20) {
     const t = (hour - 6) / 14;
     const sx = W * (0.12 + 0.76 * t), sy = HORIZON - Math.sin(t * Math.PI) * HORIZON * 0.75 + 20;
-    const glow = g.createRadialGradient(sx, sy, 4, sx, sy, 90);
+    const glow = g.createRadialGradient(sx, sy, 3, sx, sy, 110);
     const warm = hour < 8.5 || hour > 17.5;
-    glow.addColorStop(0, warm ? 'rgba(255,190,120,.95)' : 'rgba(255,244,214,.95)');
-    glow.addColorStop(0.25, warm ? 'rgba(255,150,80,.5)' : 'rgba(255,240,200,.35)');
+    glow.addColorStop(0, warm ? 'rgba(255,200,130,.98)' : 'rgba(255,248,220,.98)');
+    glow.addColorStop(0.2, warm ? 'rgba(255,160,90,.55)' : 'rgba(255,240,200,.4)');
     glow.addColorStop(1, 'rgba(255,200,120,0)');
-    g.fillStyle = glow; g.beginPath(); g.arc(sx, sy, 90, 0, 6.29); g.fill();
+    g.fillStyle = glow; g.beginPath(); g.arc(sx, sy, 110, 0, 6.29); g.fill();
   }
 }
 
-function drawGroundPlane(env) {
+/* perspective ground with grass, stones, and ruts that rush with cam motion */
+function drawGroundPlane(env, lord, time) {
+  time = time || 0;
   const grad = g.createLinearGradient(0, HORIZON, 0, H);
-  grad.addColorStop(0, rgb(colLerp(env.ground, env.fog, 0.75)));
-  grad.addColorStop(0.35, rgb(colLerp(env.ground, env.fog, 0.3)));
-  grad.addColorStop(1, rgb(env.ground.map(c => c * 0.8)));
+  grad.addColorStop(0, rgb(colLerp(env.ground, env.fog, 0.78)));
+  grad.addColorStop(0.25, rgb(colLerp(env.ground, env.fog, 0.35)));
+  grad.addColorStop(0.55, rgb(env.ground));
+  grad.addColorStop(1, rgb(env.ground.map(c => c * 0.72)));
   g.fillStyle = grad; g.fillRect(0, HORIZON, W, H - HORIZON);
+
+  /* vanishing-point strips for pseudo-3D floor */
+  const vpX = W / 2 + cam.pan * 40;
+  for (let i = 0; i < 10; i++) {
+    const t0 = i / 10, t1 = (i + 1) / 10;
+    const y0 = HORIZON + (H - HORIZON) * (t0 * t0);
+    const y1 = HORIZON + (H - HORIZON) * (t1 * t1);
+    if (i % 2) {
+      g.fillStyle = rgba([0, 0, 0], 0.04);
+      g.beginPath();
+      g.moveTo(vpX - 8, HORIZON); g.lineTo(0 - cam.pan * 30, y1);
+      g.lineTo(W - cam.pan * 30, y1); g.lineTo(vpX + 8, HORIZON);
+      g.closePath(); g.fill();
+    }
+    g.strokeStyle = rgba(colLerp(env.ground, [40, 55, 30], 0.4), 0.08 + t0 * 0.1);
+    g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, y0); g.lineTo(W, y0); g.stroke();
+  }
+
+  if (!lord) return;
+
+  /* near-field detail: grass tufts, stones, flowers — parallax with cam */
+  const seedX = lord.x * 17 + lord.y * 31 + lord.face * 7;
+  const rush = cam.zoom * 90 + cam.bob * Math.sin(time * 18) * 8;
+  const grass = env.grass || env.ground;
+  const dirt = env.dirt || env.ground;
+  for (let i = 0; i < 48; i++) {
+    const r1 = tRand(seedX, i, 1), r2 = tRand(seedX, i, 2), r3 = tRand(seedX, i, 3);
+    const fx = (r1 * 1.2 - 0.1) * W + cam.pan * -55 + cam.drift * 30;
+    const fy = HORIZON + 28 + r2 * (H - HORIZON - 20) + rush * (0.3 + r2);
+    if (fy < HORIZON + 10 || fy > H - 4) continue;
+    const near = (fy - HORIZON) / (H - HORIZON);
+    const sc = 0.4 + near * 1.6;
+    if (r3 < 0.55) {
+      g.strokeStyle = rgba(colLerp(grass, [30, 80, 30], r1 * 0.4), 0.35 + near * 0.45);
+      g.lineWidth = Math.max(1, 1.2 * sc);
+      g.lineCap = 'round';
+      for (let b = 0; b < 3; b++) {
+        const lean = (b - 1) * 3 * sc + Math.sin(time * 2.5 + i + b) * 1.5 * sc * Math.max(0.2, cam.bob);
+        g.beginPath();
+        g.moveTo(fx + b * 2 * sc, fy);
+        g.quadraticCurveTo(fx + lean, fy - 6 * sc, fx + lean * 1.4, fy - (10 + r2 * 8) * sc);
+        g.stroke();
+      }
+    } else if (r3 < 0.8) {
+      g.fillStyle = rgba(colLerp(dirt, [80, 75, 70], 0.4), 0.55 + near * 0.3);
+      g.beginPath(); g.ellipse(fx, fy, 3.5 * sc, 1.6 * sc, 0, 0, 6.29); g.fill();
+    } else {
+      g.fillStyle = rgba(r1 > 0.5 ? [220, 180, 70] : [190, 90, 140], 0.5 + near * 0.35);
+      g.beginPath(); g.arc(fx, fy - 5 * sc, 1.8 * sc, 0, 6.29); g.fill();
+      g.strokeStyle = rgba([40, 90, 40], 0.5);
+      g.lineWidth = 1;
+      g.beginPath(); g.moveTo(fx, fy); g.lineTo(fx, fy - 5 * sc); g.stroke();
+    }
+  }
+
+  /* soft road/rut toward facing direction */
+  g.fillStyle = rgba(dirt, 0.18);
+  g.beginPath();
+  g.moveTo(vpX - 18, HORIZON + 6);
+  g.lineTo(W * 0.38 + cam.pan * -20, H);
+  g.lineTo(W * 0.62 + cam.pan * -20, H);
+  g.lineTo(vpX + 18, HORIZON + 6);
+  g.closePath(); g.fill();
 }
 
 /* --------- distant-rift horizon glow when facing roughly toward it ------ */
@@ -489,61 +615,246 @@ function drawRiftHorizonGlow(lord, time) {
   while (diff > Math.PI) diff -= 2 * Math.PI;
   while (diff < -Math.PI) diff += 2 * Math.PI;
   if (Math.abs(diff) > Math.PI / 3) return;
-  const cx = W / 2 + (diff / (Math.PI / 3)) * W * 0.55;
+  const cx = W / 2 + (diff / (Math.PI / 3)) * W * 0.55 + cam.pan * 50;
   const a = Math.min(0.55, 7 / dist) * (0.75 + 0.25 * Math.sin(time * 2.2));
-  const glow = g.createRadialGradient(cx, HORIZON, 5, cx, HORIZON, 190);
+  const glow = g.createRadialGradient(cx, HORIZON, 5, cx, HORIZON, 200);
   glow.addColorStop(0, rgba([233, 92, 255], a));
   glow.addColorStop(0.4, rgba([160, 40, 200], a * 0.45));
   glow.addColorStop(1, 'rgba(120,20,160,0)');
   g.fillStyle = glow;
-  g.fillRect(cx - 190, HORIZON - 130, 380, 150);
+  g.fillRect(cx - 200, HORIZON - 140, 400, 160);
 }
 
-/* --------------------------- terrain silhouettes ------------------------ */
+function drawGroundShadow(x, y, s, wMul) {
+  g.fillStyle = 'rgba(0,0,0,0.22)';
+  g.beginPath(); g.ellipse(x, y + 1 * s, 55 * s * (wMul || 1), 8 * s, 0, 0, 6.29); g.fill();
+}
+
+/* --------------------------- terrain — pseudo-3D ------------------------ */
 function drawMountains(x, y, s, tx, ty, P) {
-  const w = 360 * s, h = (150 + tRand(tx, ty, 1) * 80) * s;
-  const pts = [[-0.5,0],[-0.34,0.72],[-0.2,0.4],[-0.03,1],[0.12,0.5],[0.3,0.78],[0.5,0]];
-  g.fillStyle = P.mount;
-  g.beginPath(); g.moveTo(x - w/2, y);
-  for (const [px, ph] of pts) {
-    const j = (tRand(tx, ty, (px*10|0)+5) - 0.5) * 0.15;
-    g.lineTo(x + (px + j*0.3) * w, y - (ph + j) * h);
+  const w = 400 * s, h = (175 + tRand(tx, ty, 1) * 95) * s;
+  drawGroundShadow(x, y, s, 1.5);
+  /* back → front peaks: each is a real mountain (steep ridges, lit/shade faces, snow) */
+  const peaks = [
+    { ox: -0.28, hw: 0.42, hh: 0.62 + tRand(tx, ty, 4) * 0.12 },
+    { ox: 0.30,  hw: 0.38, hh: 0.70 + tRand(tx, ty, 5) * 0.12 },
+    { ox: -0.02, hw: 0.52, hh: 0.95 + tRand(tx, ty, 6) * 0.08 },
+  ];
+  for (let pi = 0; pi < peaks.length; pi++) {
+    const p = peaks[pi];
+    const cx = x + p.ox * w;
+    const half = p.hw * w * 0.5;
+    const ph = p.hh * h;
+    const tipX = cx + (tRand(tx, ty, 10 + pi) - 0.5) * half * 0.2;
+    const tipY = y - ph;
+    /* base footing (broader rock mass) */
+    g.fillStyle = P.mountShade;
+    g.beginPath();
+    g.moveTo(cx - half * 1.15, y);
+    g.lineTo(cx - half * 0.7, y - ph * 0.22);
+    g.lineTo(cx + half * 0.7, y - ph * 0.18);
+    g.lineTo(cx + half * 1.15, y);
+    g.closePath(); g.fill();
+    /* left (lit) face */
+    g.fillStyle = P.mountLit;
+    g.beginPath();
+    g.moveTo(cx - half, y);
+    g.lineTo(cx - half * 0.55, y - ph * 0.38);
+    g.lineTo(cx - half * 0.25, y - ph * 0.55);
+    g.lineTo(tipX, tipY);
+    g.lineTo(cx + half * 0.08, y);
+    g.closePath(); g.fill();
+    /* right (shade) face */
+    g.fillStyle = P.mountShade;
+    g.beginPath();
+    g.moveTo(cx + half * 0.08, y);
+    g.lineTo(tipX, tipY);
+    g.lineTo(cx + half * 0.35, y - ph * 0.5);
+    g.lineTo(cx + half * 0.7, y - ph * 0.28);
+    g.lineTo(cx + half, y);
+    g.closePath(); g.fill();
+    /* mid body blend so the ridge reads */
+    g.fillStyle = P.mount;
+    g.beginPath();
+    g.moveTo(cx - half * 0.35, y - ph * 0.15);
+    g.lineTo(tipX - half * 0.05, tipY + ph * 0.12);
+    g.lineTo(tipX + half * 0.12, tipY + ph * 0.18);
+    g.lineTo(cx + half * 0.4, y - ph * 0.12);
+    g.closePath(); g.fill();
+    /* ridge line */
+    g.strokeStyle = P.mountHi;
+    g.lineWidth = Math.max(1, 1.4 * s);
+    g.beginPath();
+    g.moveTo(cx - half * 0.5, y - ph * 0.2);
+    g.lineTo(tipX, tipY);
+    g.lineTo(cx + half * 0.55, y - ph * 0.25);
+    g.stroke();
+    /* snow cap — irregular lower edge, only on taller peaks */
+    if (p.hh > 0.68) {
+      const snowBot = tipY + ph * (0.22 + tRand(tx, ty, 20 + pi) * 0.08);
+      const sg = g.createLinearGradient(tipX, tipY, tipX, snowBot);
+      sg.addColorStop(0, P.snow);
+      sg.addColorStop(0.7, P.snow);
+      sg.addColorStop(1, 'rgba(230,235,245,0)');
+      g.fillStyle = sg;
+      g.beginPath();
+      g.moveTo(tipX, tipY);
+      g.lineTo(tipX - half * 0.22, tipY + ph * 0.12);
+      g.lineTo(tipX - half * 0.18, snowBot - ph * 0.02);
+      g.lineTo(tipX - half * 0.05, snowBot + ph * 0.03);
+      g.lineTo(tipX + half * 0.08, snowBot);
+      g.lineTo(tipX + half * 0.2, tipY + ph * 0.14);
+      g.closePath(); g.fill();
+    }
+    /* cliff ledges on shade side */
+    g.strokeStyle = P.mount;
+    g.lineWidth = Math.max(1, 1.2 * s);
+    g.beginPath();
+    g.moveTo(tipX + half * 0.1, tipY + ph * 0.35);
+    g.lineTo(tipX + half * 0.35, tipY + ph * 0.38);
+    g.moveTo(tipX + half * 0.05, tipY + ph * 0.55);
+    g.lineTo(tipX + half * 0.4, tipY + ph * 0.52);
+    g.stroke();
   }
-  g.lineTo(x + w/2, y); g.closePath(); g.fill();
-  /* snow cap on the main peak */
-  g.fillStyle = P.snow;
-  g.beginPath();
-  g.moveTo(x - 0.03*w, y - h); g.lineTo(x - 0.09*w, y - h*0.8); g.lineTo(x + 0.04*w, y - h*0.82);
-  g.closePath(); g.fill();
 }
 function drawHills(x, y, s, tx, ty, P) {
-  const w = 300 * s, h = (55 + tRand(tx, ty, 2) * 25) * s;
-  g.fillStyle = P.hill;
-  for (const [ox, sc] of [[-0.22, 0.85], [0.15, 1], [0.42, 0.6]]) {
+  const w = 310 * s, h = (58 + tRand(tx, ty, 2) * 28) * s;
+  drawGroundShadow(x, y, s, 1.1);
+  for (const [ox, sc, lit] of [[-0.28, 0.8, false], [0.2, 1, true], [0.45, 0.55, false]]) {
+    g.fillStyle = lit ? P.hillLit : P.hill;
     g.beginPath();
-    g.ellipse(x + ox * w, y, w * 0.32 * sc, h * sc, 0, Math.PI, 0);
+    g.ellipse(x + ox * w, y, w * 0.34 * sc, h * sc, 0, Math.PI, 0);
     g.fill();
+    if (lit) {
+      g.fillStyle = P.grassTuft;
+      g.globalAlpha = 0.35;
+      g.beginPath(); g.ellipse(x + ox * w - 8 * s, y - h * 0.35, w * 0.12 * sc, h * 0.25 * sc, -0.3, 0, 6.29); g.fill();
+      g.globalAlpha = 1;
+    }
   }
 }
 function drawDowns(x, y, s, tx, ty, P) {
-  const w = 320 * s, h = 28 * s;
-  g.fillStyle = P.down;
-  for (const [ox, sc] of [[-0.25, 0.9], [0.2, 1]]) {
+  const w = 330 * s, h = 32 * s;
+  drawGroundShadow(x, y, s, 1.0);
+  for (const [ox, sc, lit] of [[-0.28, 0.9, false], [0.18, 1, true]]) {
+    g.fillStyle = lit ? P.downLit : P.down;
     g.beginPath();
-    g.ellipse(x + ox * w, y, w * 0.4 * sc, h * sc, 0, Math.PI, 0);
+    g.ellipse(x + ox * w, y, w * 0.42 * sc, h * sc, 0, Math.PI, 0);
     g.fill();
   }
 }
-function drawForest(x, y, s, tx, ty, P) {
-  const n = 5, w = 260 * s;
-  for (let i = 0; i < n; i++) {
-    const r1 = tRand(tx, ty, i), r2 = tRand(tx, ty, i + 20);
-    const cx = x + (i - (n - 1) / 2) * (w / n) + (r1 - 0.5) * 18 * s;
-    const th = (55 + r2 * 30) * s, tw = (26 + r1 * 10) * s;
-    g.fillStyle = i % 2 ? P.tree : P.tree2;
+function drawPine(cx, y, s, r1, r2, P, time, i) {
+  const th = (70 + r2 * 42) * s;
+  const sway = Math.sin(time * 1.3 + i * 1.6) * 1.8 * s * (0.35 + cam.bob * 0.5);
+  const trunkW = Math.max(2.2, (4.5 + r1 * 2) * s);
+  const trunkH = th * 0.38;
+  /* trunk — slightly tapered */
+  g.fillStyle = P.trunk;
+  g.beginPath();
+  g.moveTo(cx - trunkW * 0.55 + sway * 0.15, y);
+  g.lineTo(cx - trunkW * 0.35 + sway * 0.4, y - trunkH);
+  g.lineTo(cx + trunkW * 0.35 + sway * 0.4, y - trunkH);
+  g.lineTo(cx + trunkW * 0.55 + sway * 0.15, y);
+  g.closePath(); g.fill();
+  g.fillStyle = P.trunkLit;
+  g.fillRect(cx - trunkW * 0.35 + sway * 0.3, y - trunkH, trunkW * 0.28, trunkH * 0.95);
+  /* stacked fir tiers — classic pine silhouette */
+  const tiers = 4 + ((r1 * 2) | 0);
+  for (let t = 0; t < tiers; t++) {
+    const u = t / (tiers - 1);                    /* 0 bottom → 1 top */
+    const tierY = y - trunkH * 0.55 - u * th * 0.72;
+    const tierH = th * (0.28 - u * 0.06);
+    const tierW = (38 + r1 * 10) * s * (1.05 - u * 0.62);
+    const sw = sway * (0.5 + u * 0.6);
+    const jL = (tRand(i * 17, t, 3) - 0.5) * tierW * 0.08;
+    const jR = (tRand(i * 17, t, 4) - 0.5) * tierW * 0.08;
+    /* dark body */
+    g.fillStyle = t % 2 ? P.treeDark : P.tree;
     g.beginPath();
-    g.moveTo(cx, y - th); g.lineTo(cx - tw / 2, y); g.lineTo(cx + tw / 2, y);
+    g.moveTo(cx + sw, tierY - tierH);
+    g.lineTo(cx - tierW * 0.5 + sw * 0.4 + jL, tierY + tierH * 0.15);
+    g.lineTo(cx - tierW * 0.15 + sw * 0.5, tierY + tierH * 0.02);
+    g.lineTo(cx + tierW * 0.05 + sw * 0.5, tierY + tierH * 0.12);
+    g.lineTo(cx + tierW * 0.5 + sw * 0.4 + jR, tierY + tierH * 0.15);
     g.closePath(); g.fill();
+    /* sunlit left edge of needles */
+    g.fillStyle = P.treeLit;
+    g.beginPath();
+    g.moveTo(cx + sw, tierY - tierH);
+    g.lineTo(cx - tierW * 0.5 + sw * 0.4 + jL, tierY + tierH * 0.15);
+    g.lineTo(cx - tierW * 0.05 + sw, tierY - tierH * 0.15);
+    g.closePath(); g.fill();
+  }
+  /* tip */
+  g.fillStyle = P.treeLit;
+  g.beginPath();
+  g.moveTo(cx + sway, y - th);
+  g.lineTo(cx - 5 * s + sway * 0.7, y - th + 14 * s);
+  g.lineTo(cx + 5 * s + sway * 0.7, y - th + 14 * s);
+  g.closePath(); g.fill();
+}
+function drawBroadleaf(cx, y, s, r1, r2, P, time, i) {
+  const th = (55 + r2 * 30) * s;
+  const sway = Math.sin(time * 1.5 + i) * 2.4 * s * (0.4 + cam.bob * 0.5);
+  const trunkW = Math.max(2.5, 5.5 * s);
+  g.fillStyle = P.trunk;
+  g.beginPath();
+  g.moveTo(cx - trunkW * 0.5, y);
+  g.lineTo(cx - trunkW * 0.3 + sway * 0.3, y - th * 0.55);
+  g.lineTo(cx + trunkW * 0.3 + sway * 0.3, y - th * 0.55);
+  g.lineTo(cx + trunkW * 0.5, y);
+  g.closePath(); g.fill();
+  g.fillStyle = P.trunkLit;
+  g.fillRect(cx - trunkW * 0.25 + sway * 0.2, y - th * 0.55, trunkW * 0.3, th * 0.5);
+  /* forked upper branches */
+  g.strokeStyle = P.trunk;
+  g.lineWidth = Math.max(1, 2 * s);
+  g.lineCap = 'round';
+  g.beginPath();
+  g.moveTo(cx + sway * 0.3, y - th * 0.5);
+  g.lineTo(cx - 10 * s + sway, y - th * 0.78);
+  g.moveTo(cx + sway * 0.3, y - th * 0.48);
+  g.lineTo(cx + 12 * s + sway, y - th * 0.75);
+  g.stroke();
+  /* cloud of foliage — overlapping lobes */
+  const lobes = [
+    [0, 0.78, 0.42, 0.34, P.treeDark],
+    [-0.28, 0.68, 0.32, 0.28, P.tree],
+    [0.30, 0.66, 0.30, 0.26, P.tree],
+    [-0.08, 0.88, 0.28, 0.24, P.treeLit],
+    [0.14, 0.82, 0.24, 0.2, P.treeLit],
+  ];
+  for (const [ox, oy, rw, rh, col] of lobes) {
+    g.fillStyle = col;
+    g.beginPath();
+    g.ellipse(cx + ox * th + sway, y - oy * th, rw * th, rh * th, 0, 0, 6.29);
+    g.fill();
+  }
+}
+function drawTree(cx, y, s, r1, r2, P, time, i) {
+  if (r1 < 0.72) drawPine(cx, y, s, r1, r2, P, time, i);
+  else drawBroadleaf(cx, y, s, r1, r2, P, time, i);
+}
+function drawForest(x, y, s, tx, ty, P, time) {
+  drawGroundShadow(x, y, s, 1.2);
+  const n = 7, w = 280 * s;
+  /* underbrush */
+  g.fillStyle = P.treeDark;
+  for (let i = 0; i < 5; i++) {
+    const bx = x + (tRand(tx, ty, i + 80) - 0.5) * w * 0.9;
+    g.beginPath();
+    g.ellipse(bx, y - 2 * s, 10 * s, 5 * s, 0, 0, 6.29);
+    g.fill();
+  }
+  /* back row then front for depth */
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < n; i++) {
+      if ((i % 2) !== pass) continue;
+      const r1 = tRand(tx, ty, i), r2 = tRand(tx, ty, i + 20);
+      const cx = x + (i - (n - 1) / 2) * (w / n) + (r1 - 0.5) * 14 * s;
+      const yOff = pass ? 0 : -3 * s;
+      drawTree(cx, y + yOff, s * (pass ? 1.08 : 0.86), r1, r2, P, time, i + pass * 11);
+    }
   }
 }
 function crenels(x, y, w, hgt, n, fill) {
@@ -552,84 +863,142 @@ function crenels(x, y, w, hgt, n, fill) {
   for (let i = 0; i < n; i++) g.fillRect(x + i * tw * 2, y - hgt, tw, hgt);
 }
 function drawKeep(x, y, s, tx, ty, P, big, night) {
-  const w = (big ? 170 : 120) * s, wallH = (big ? 70 : 52) * s, tH = (big ? 130 : 95) * s, tW = (big ? 34 : 26) * s;
-  g.fillStyle = P.stone;
-  g.fillRect(x - w/2, y - wallH, w, wallH);                       /* wall */
-  g.fillRect(x - w/2 - tW*0.3, y - tH, tW, tH);                   /* left tower */
-  g.fillRect(x + w/2 - tW*0.7, y - tH, tW, tH);                   /* right tower */
-  crenels(x - w/2 - tW*0.3, y - tH, tW, 7*s, 3, P.stone);
-  crenels(x + w/2 - tW*0.7, y - tH, tW, 7*s, 3, P.stone);
-  crenels(x - w/2 + tW*0.8, y - wallH, w - tW*1.6, 6*s, 6, P.stone);
-  g.fillStyle = P.dark;                                            /* gate */
+  const w = (big ? 175 : 124) * s, wallH = (big ? 74 : 54) * s;
+  const tH = (big ? 138 : 100) * s, tW = (big ? 36 : 28) * s;
+  drawGroundShadow(x, y, s, 1.25);
+  /* side face (right) for 3D block */
+  g.fillStyle = P.stoneShade;
   g.beginPath();
-  g.moveTo(x - 13*s, y); g.lineTo(x - 13*s, y - 24*s);
-  g.arc(x, y - 24*s, 13*s, Math.PI, 0);
-  g.lineTo(x + 13*s, y); g.closePath(); g.fill();
-  if (night) {                                                     /* lit windows */
+  g.moveTo(x + w / 2, y - wallH); g.lineTo(x + w / 2 + 16 * s, y - wallH + 10 * s);
+  g.lineTo(x + w / 2 + 16 * s, y + 6 * s); g.lineTo(x + w / 2, y);
+  g.closePath(); g.fill();
+  /* main wall with vertical gradient */
+  const wg = g.createLinearGradient(x - w / 2, 0, x + w / 2, 0);
+  wg.addColorStop(0, P.stoneLit); wg.addColorStop(0.55, P.stone); wg.addColorStop(1, P.stoneShade);
+  g.fillStyle = wg;
+  g.fillRect(x - w / 2, y - wallH, w, wallH);
+  /* towers */
+  const drawTowerBlock = (tx0, topH) => {
+    g.fillStyle = P.stone;
+    g.fillRect(tx0, y - topH, tW, topH);
+    g.fillStyle = P.stoneLit;
+    g.fillRect(tx0, y - topH, tW * 0.35, topH);
+    g.fillStyle = P.stoneShade;
+    g.fillRect(tx0 + tW * 0.7, y - topH, tW * 0.3, topH);
+    crenels(tx0, y - topH, tW, 8 * s, 3, P.stoneLit);
+  };
+  drawTowerBlock(x - w / 2 - tW * 0.25, tH);
+  drawTowerBlock(x + w / 2 - tW * 0.75, tH);
+  crenels(x - w / 2 + tW * 0.7, y - wallH, w - tW * 1.5, 7 * s, 6, P.stoneLit);
+  /* gate with depth */
+  g.fillStyle = P.dark;
+  g.beginPath();
+  g.moveTo(x - 14 * s, y); g.lineTo(x - 14 * s, y - 26 * s);
+  g.arc(x, y - 26 * s, 14 * s, Math.PI, 0);
+  g.lineTo(x + 14 * s, y); g.closePath(); g.fill();
+  g.strokeStyle = P.stoneShade; g.lineWidth = Math.max(1, 2 * s);
+  g.stroke();
+  if (night) {
     g.fillStyle = P.window;
-    g.fillRect(x - w/2 - tW*0.3 + tW*0.35, y - tH*0.75, 4*s, 7*s);
-    g.fillRect(x + w/2 - tW*0.7 + tW*0.35, y - tH*0.68, 4*s, 7*s);
+    g.shadowColor = 'rgba(255,200,100,0.7)'; g.shadowBlur = 8 * s;
+    g.fillRect(x - w / 2 - tW * 0.25 + tW * 0.35, y - tH * 0.75, 5 * s, 8 * s);
+    g.fillRect(x + w / 2 - tW * 0.75 + tW * 0.35, y - tH * 0.68, 5 * s, 8 * s);
+    g.shadowBlur = 0;
   }
-  if (big) {                                                       /* citadel banner */
-    g.strokeStyle = P.dark; g.lineWidth = Math.max(1, 2*s);
-    g.beginPath(); g.moveTo(x, y - tH); g.lineTo(x, y - tH - 28*s); g.stroke();
+  if (big) {
+    g.strokeStyle = P.dark; g.lineWidth = Math.max(1, 2.5 * s);
+    g.beginPath(); g.moveTo(x, y - tH); g.lineTo(x, y - tH - 30 * s); g.stroke();
     g.fillStyle = P.banner;
-    g.beginPath(); g.moveTo(x, y - tH - 28*s); g.lineTo(x + 22*s, y - tH - 22*s); g.lineTo(x, y - tH - 16*s);
+    g.beginPath();
+    g.moveTo(x, y - tH - 30 * s); g.lineTo(x + 24 * s, y - tH - 22 * s); g.lineTo(x, y - tH - 14 * s);
     g.closePath(); g.fill();
   }
 }
 function drawVillage(x, y, s, tx, ty, P, night) {
+  drawGroundShadow(x, y, s, 1.1);
   for (let i = 0; i < 3; i++) {
     const r = tRand(tx, ty, i + 3);
-    const hx = x + (i - 1) * 52 * s + (r - 0.5) * 14 * s;
-    const hw = (34 + r * 8) * s, hh = (20 + r * 6) * s;
-    g.fillStyle = P.stone;
-    g.fillRect(hx - hw/2, y - hh, hw, hh);
+    const hx = x + (i - 1) * 54 * s + (r - 0.5) * 12 * s;
+    const hw = (36 + r * 10) * s, hh = (22 + r * 7) * s;
+    /* side wall */
+    g.fillStyle = P.stoneShade;
+    g.beginPath();
+    g.moveTo(hx + hw / 2, y - hh); g.lineTo(hx + hw / 2 + 10 * s, y - hh + 6 * s);
+    g.lineTo(hx + hw / 2 + 10 * s, y + 3 * s); g.lineTo(hx + hw / 2, y);
+    g.closePath(); g.fill();
+    const wg = g.createLinearGradient(hx - hw / 2, 0, hx + hw / 2, 0);
+    wg.addColorStop(0, P.stoneLit); wg.addColorStop(1, P.stone);
+    g.fillStyle = wg;
+    g.fillRect(hx - hw / 2, y - hh, hw, hh);
+    /* thick roof */
+    g.fillStyle = P.roofShade;
+    g.beginPath();
+    g.moveTo(hx - hw / 2 - 5 * s, y - hh); g.lineTo(hx, y - hh - 18 * s);
+    g.lineTo(hx + hw / 2 + 12 * s, y - hh + 4 * s); g.lineTo(hx + hw / 2 + 5 * s, y - hh);
+    g.closePath(); g.fill();
     g.fillStyle = P.roof;
     g.beginPath();
-    g.moveTo(hx - hw/2 - 4*s, y - hh); g.lineTo(hx, y - hh - 16*s); g.lineTo(hx + hw/2 + 4*s, y - hh);
-    g.closePath(); g.fill();
-    if (night) { g.fillStyle = P.window; g.fillRect(hx - 3*s, y - hh*0.6, 5*s, 6*s); }
+    g.moveTo(hx - hw / 2 - 5 * s, y - hh); g.lineTo(hx, y - hh - 18 * s);
+    g.lineTo(hx + hw / 2 + 5 * s, y - hh); g.closePath(); g.fill();
+    if (night) {
+      g.fillStyle = P.window; g.shadowColor = 'rgba(255,200,80,0.6)'; g.shadowBlur = 6 * s;
+      g.fillRect(hx - 3 * s, y - hh * 0.55, 6 * s, 7 * s); g.shadowBlur = 0;
+    }
   }
 }
 function drawTower(x, y, s, tx, ty, P, night) {
-  const tw = 24 * s, th = 125 * s;
-  g.fillStyle = P.stone;
-  g.fillRect(x - tw/2, y - th, tw, th);
-  g.beginPath();                                                   /* cone roof */
-  g.moveTo(x - tw/2 - 5*s, y - th); g.lineTo(x, y - th - 26*s); g.lineTo(x + tw/2 + 5*s, y - th);
-  g.closePath(); g.fillStyle = P.roof; g.fill();
+  const tw = 26 * s, th = 132 * s;
+  drawGroundShadow(x, y, s, 0.55);
+  /* cylinder shading */
+  const tg = g.createLinearGradient(x - tw / 2, 0, x + tw / 2, 0);
+  tg.addColorStop(0, P.stoneLit); tg.addColorStop(0.45, P.stone); tg.addColorStop(1, P.stoneShade);
+  g.fillStyle = tg;
+  g.fillRect(x - tw / 2, y - th, tw, th);
+  /* cone roof with volume */
+  g.fillStyle = P.roofShade;
+  g.beginPath();
+  g.moveTo(x - tw / 2 - 6 * s, y - th); g.lineTo(x, y - th - 28 * s); g.lineTo(x + tw / 2 + 10 * s, y - th + 4 * s);
+  g.closePath(); g.fill();
+  g.fillStyle = P.roof;
+  g.beginPath();
+  g.moveTo(x - tw / 2 - 6 * s, y - th); g.lineTo(x, y - th - 28 * s); g.lineTo(x + tw / 2 + 6 * s, y - th);
+  g.closePath(); g.fill();
   g.fillStyle = night ? P.window : P.dark;
-  g.fillRect(x - 3.5*s, y - th * 0.8, 7*s, 10*s);
+  if (night) { g.shadowColor = 'rgba(255,210,100,0.75)'; g.shadowBlur = 10 * s; }
+  g.fillRect(x - 4 * s, y - th * 0.78, 8 * s, 11 * s);
+  g.shadowBlur = 0;
+  /* balcony ring */
+  g.fillStyle = P.stoneLit;
+  g.fillRect(x - tw * 0.65, y - th * 0.55, tw * 1.3, 4 * s);
 }
 function drawWaste(x, y, s, tx, ty, P) {
+  drawGroundShadow(x, y, s, 0.9);
   const r = tRand(tx, ty, 8);
   const cx = x + (r - 0.5) * 60 * s;
   g.strokeStyle = P.dead; g.lineWidth = Math.max(1, 4 * s); g.lineCap = 'round';
   g.beginPath();
-  g.moveTo(cx, y); g.lineTo(cx + 4*s, y - 52*s);
-  g.moveTo(cx + 2*s, y - 30*s); g.lineTo(cx - 18*s, y - 48*s);
-  g.moveTo(cx + 3*s, y - 40*s); g.lineTo(cx + 20*s, y - 60*s);
+  g.moveTo(cx, y); g.lineTo(cx + 4 * s, y - 55 * s);
+  g.moveTo(cx + 2 * s, y - 32 * s); g.lineTo(cx - 20 * s, y - 50 * s);
+  g.moveTo(cx + 3 * s, y - 42 * s); g.lineTo(cx + 22 * s, y - 62 * s);
   g.stroke();
   g.fillStyle = P.dead;
-  for (let i = 0; i < 4; i++) {
-    const sx = x + (tRand(tx, ty, i + 30) - 0.5) * 220 * s;
+  for (let i = 0; i < 5; i++) {
+    const sx = x + (tRand(tx, ty, i + 30) - 0.5) * 230 * s;
     g.beginPath();
-    g.moveTo(sx - 5*s, y); g.lineTo(sx, y - (12 + tRand(tx,ty,i+40)*10)*s); g.lineTo(sx + 5*s, y);
+    g.moveTo(sx - 6 * s, y); g.lineTo(sx, y - (14 + tRand(tx, ty, i + 40) * 12) * s); g.lineTo(sx + 6 * s, y);
     g.closePath(); g.fill();
   }
 }
 function drawRift(x, y, s, time, closing) {
   const open = 1 - clamp(closing || 0, 0, 1);
-  const h = 190 * s * (0.4 + 0.6 * open), pw = 70 * s * open + 8 * s;
+  const h = 200 * s * (0.4 + 0.6 * open), pw = 75 * s * open + 8 * s;
   const pulse = 0.8 + 0.2 * Math.sin(time * 3);
-  const glow = g.createRadialGradient(x, y - h * 0.45, 4, x, y - h * 0.45, 200 * s * pulse + 30);
+  const glow = g.createRadialGradient(x, y - h * 0.45, 4, x, y - h * 0.45, 210 * s * pulse + 30);
   glow.addColorStop(0, rgba([250, 160, 255], 0.85 * open + 0.1));
   glow.addColorStop(0.35, rgba([190, 60, 235], 0.5 * open));
   glow.addColorStop(1, 'rgba(110,20,150,0)');
   g.fillStyle = glow;
-  g.fillRect(x - 220 * s, y - h - 120 * s, 440 * s, h + 170 * s);
-  /* jagged fissure */
+  g.fillRect(x - 230 * s, y - h - 120 * s, 460 * s, h + 180 * s);
   g.fillStyle = '#0b0212';
   g.beginPath();
   g.moveTo(x - pw * 0.4, y);
@@ -642,98 +1011,161 @@ function drawRift(x, y, s, time, closing) {
   g.lineWidth = Math.max(1, 3 * s);
   g.beginPath(); g.moveTo(x - pw * 0.1, y - 4); g.lineTo(x - pw * 0.15, y - h * 0.5); g.lineTo(x + pw * 0.05, y - h * 0.95);
   g.stroke();
-  /* rising motes */
-  for (let i = 0; i < 7; i++) {
-    const ph = (time * 0.35 + i / 7) % 1;
-    const mx = x + Math.sin(time + i * 2.2) * 40 * s;
-    g.fillStyle = rgba([240, 140, 255], (1 - ph) * 0.8 * open);
-    g.beginPath(); g.arc(mx, y - ph * (h + 90 * s), (2.5 - ph * 1.5) * Math.max(s, 0.35) * 2, 0, 6.29); g.fill();
+  for (let i = 0; i < 9; i++) {
+    const ph = (time * 0.35 + i / 9) % 1;
+    const mx = x + Math.sin(time + i * 2.2) * 42 * s;
+    g.fillStyle = rgba([240, 140, 255], (1 - ph) * 0.85 * open);
+    g.beginPath(); g.arc(mx, y - ph * (h + 95 * s), (2.8 - ph * 1.6) * Math.max(s, 0.35) * 2, 0, 6.29); g.fill();
   }
 }
 function drawCorruptMark(x, y, s, tx, ty) {
-  g.fillStyle = rgba([190, 80, 230], 0.75);
-  for (let i = 0; i < 3; i++) {
-    const cx = x + (tRand(tx, ty, i + 50) - 0.5) * 150 * s;
-    const ch = (10 + tRand(tx, ty, i + 60) * 14) * s;
+  g.fillStyle = rgba([190, 80, 230], 0.7);
+  for (let i = 0; i < 4; i++) {
+    const cx = x + (tRand(tx, ty, i + 50) - 0.5) * 160 * s;
+    const ch = (12 + tRand(tx, ty, i + 60) * 16) * s;
     g.beginPath();
-    g.moveTo(cx - 4*s, y); g.lineTo(cx, y - ch); g.lineTo(cx + 4*s, y);
+    g.moveTo(cx - 5 * s, y); g.lineTo(cx, y - ch); g.lineTo(cx + 5 * s, y);
     g.closePath(); g.fill();
   }
+  g.strokeStyle = rgba([180, 60, 220], 0.35);
+  g.lineWidth = Math.max(1, 1.5 * s);
+  g.beginPath(); g.ellipse(x, y, 40 * s, 6 * s, 0, 0, 6.29); g.stroke();
 }
-/* the Abyssal horde — baleful aura, crimson rim-light, burning eyes,
-   and a crooked banner so they read clearly at any distance */
+
+/* Abyssal horde — bulkier, horned, clawed, smoke-wreathed */
 function drawHorde(x, y, s, time) {
-  const pulse = 0.7 + 0.3 * Math.sin(time * 4);
-  /* baleful aura */
-  const aura = g.createRadialGradient(x, y - 22*s, 2, x, y - 22*s, 85*s);
-  aura.addColorStop(0, rgba([255, 40, 90], 0.34 * pulse));
-  aura.addColorStop(0.5, rgba([190, 30, 160], 0.18 * pulse));
-  aura.addColorStop(1, 'rgba(120,10,120,0)');
+  const pulse = 0.65 + 0.35 * Math.sin(time * 4.2);
+  const stomp = Math.sin(time * 5) * 1.5 * s;
+  const aura = g.createRadialGradient(x, y - 28 * s, 2, x, y - 28 * s, 100 * s);
+  aura.addColorStop(0, rgba([255, 30, 70], 0.4 * pulse));
+  aura.addColorStop(0.45, rgba([160, 10, 120], 0.22 * pulse));
+  aura.addColorStop(1, 'rgba(80,0,60,0)');
   g.fillStyle = aura;
-  g.fillRect(x - 90*s, y - 105*s, 180*s, 125*s);
-  /* scorched ground beneath them */
-  g.fillStyle = rgba([60, 8, 40], 0.55);
-  g.beginPath(); g.ellipse(x, y, 60*s, 8*s, 0, 0, 6.29); g.fill();
-  /* crooked war-banner with a glowing sigil */
-  g.strokeStyle = '#1a0a20'; g.lineWidth = Math.max(1, 3*s);
-  g.beginPath(); g.moveTo(x + 26*s, y); g.lineTo(x + 30*s, y - 64*s); g.stroke();
-  g.fillStyle = '#2a0d33';
-  g.beginPath(); g.moveTo(x + 30*s, y - 64*s); g.lineTo(x + 52*s, y - 56*s); g.lineTo(x + 30*s, y - 46*s);
+  g.fillRect(x - 105 * s, y - 120 * s, 210 * s, 140 * s);
+  /* scorched earth + cracks */
+  g.fillStyle = rgba([40, 4, 20], 0.65);
+  g.beginPath(); g.ellipse(x, y + stomp * 0.3, 70 * s, 10 * s, 0, 0, 6.29); g.fill();
+  g.strokeStyle = rgba([255, 40, 80], 0.35 * pulse);
+  g.lineWidth = Math.max(1, 1.5 * s);
+  for (let c = 0; c < 4; c++) {
+    const a = c * 1.4 + time * 0.2;
+    g.beginPath(); g.moveTo(x, y);
+    g.lineTo(x + Math.cos(a) * 50 * s, y + Math.sin(a) * 8 * s); g.stroke();
+  }
+  /* banner */
+  g.strokeStyle = '#120510'; g.lineWidth = Math.max(1, 3.5 * s);
+  g.beginPath(); g.moveTo(x + 32 * s, y); g.lineTo(x + 36 * s, y - 72 * s); g.stroke();
+  g.fillStyle = '#1a0618';
+  g.beginPath();
+  g.moveTo(x + 36 * s, y - 72 * s); g.lineTo(x + 62 * s, y - 62 * s); g.lineTo(x + 36 * s, y - 50 * s);
   g.closePath(); g.fill();
-  g.fillStyle = rgba([255, 80, 220], 0.9 * pulse);
-  g.beginPath(); g.arc(x + 37*s, y - 55*s, 3.5*s, 0, 6.29); g.fill();
-  /* the horde itself — tall, spiky, rim-lit */
+  g.fillStyle = rgba([255, 50, 100], 0.95 * pulse);
+  g.beginPath(); g.arc(x + 46 * s, y - 61 * s, 4.5 * s, 0, 6.29); g.fill();
+  /* smoke wisps */
   for (let i = 0; i < 5; i++) {
-    const hx = x + (i - 2) * 20 * s;
-    const hh = (38 + (i % 3) * 9) * s;
-    const sway = Math.sin(time * 3 + i * 1.3) * 2.5 * s;
-    g.fillStyle = '#0a0312';
+    const ph = (time * 0.25 + i * 0.18) % 1;
+    g.fillStyle = rgba([40, 10, 30], (1 - ph) * 0.35);
     g.beginPath();
-    g.moveTo(hx - 10*s + sway, y);
-    g.lineTo(hx - 5*s, y - hh * 0.7); g.lineTo(hx - 9*s, y - hh * 0.9);
-    g.lineTo(hx - 2*s, y - hh * 0.85); g.lineTo(hx, y - hh);
-    g.lineTo(hx + 2*s, y - hh * 0.8); g.lineTo(hx + 8*s, y - hh * 0.92);
-    g.lineTo(hx + 5*s, y - hh * 0.65); g.lineTo(hx + 10*s + sway, y);
+    g.ellipse(x + Math.sin(time + i) * 30 * s, y - 20 * s - ph * 70 * s, (12 - ph * 6) * s, (8 - ph * 4) * s, 0, 0, 6.29);
+    g.fill();
+  }
+  /* warriors */
+  for (let i = 0; i < 5; i++) {
+    const hx = x + (i - 2) * 22 * s;
+    const hh = (44 + (i % 3) * 11) * s;
+    const sway = Math.sin(time * 3.2 + i * 1.4) * 3 * s;
+    const by = y + stomp * (i % 2 ? 1 : -0.5);
+    /* bulk body */
+    g.fillStyle = '#07020c';
+    g.beginPath();
+    g.moveTo(hx - 12 * s + sway, by);
+    g.lineTo(hx - 14 * s + sway * 0.5, by - hh * 0.45);
+    g.lineTo(hx - 10 * s, by - hh * 0.72);
+    g.lineTo(hx - 16 * s, by - hh * 0.95); /* left horn */
+    g.lineTo(hx - 4 * s, by - hh * 0.88);
+    g.lineTo(hx, by - hh * 1.05);
+    g.lineTo(hx + 4 * s, by - hh * 0.88);
+    g.lineTo(hx + 16 * s, by - hh * 0.95); /* right horn */
+    g.lineTo(hx + 10 * s, by - hh * 0.72);
+    g.lineTo(hx + 14 * s + sway * 0.5, by - hh * 0.45);
+    g.lineTo(hx + 12 * s + sway, by);
     g.closePath(); g.fill();
-    g.strokeStyle = rgba([255, 60, 130], 0.55 * pulse);
-    g.lineWidth = Math.max(1, 1.5*s);
+    /* crimson rim */
+    g.strokeStyle = rgba([255, 40, 90], 0.65 * pulse);
+    g.lineWidth = Math.max(1, 2 * s);
     g.stroke();
-    /* burning eyes: magenta glow, white-hot core */
-    g.fillStyle = rgba([255, 60, 200], 0.85 * pulse);
-    g.fillRect(hx - 5*s, y - hh * 0.85, 5*s, 5*s);
-    g.fillRect(hx + 0.5*s, y - hh * 0.85, 5*s, 5*s);
-    g.fillStyle = rgba([255, 240, 255], 0.95);
-    g.fillRect(hx - 4*s, y - hh * 0.83, 2.6*s, 2.6*s);
-    g.fillRect(hx + 1.5*s, y - hh * 0.83, 2.6*s, 2.6*s);
+    /* claws */
+    g.strokeStyle = rgba([255, 80, 120], 0.7);
+    g.lineWidth = Math.max(1, 1.8 * s);
+    g.beginPath();
+    g.moveTo(hx - 12 * s, by - hh * 0.4); g.lineTo(hx - 22 * s + sway, by - hh * 0.15);
+    g.moveTo(hx - 12 * s, by - hh * 0.38); g.lineTo(hx - 20 * s + sway, by - hh * 0.05);
+    g.moveTo(hx + 12 * s, by - hh * 0.4); g.lineTo(hx + 22 * s + sway, by - hh * 0.15);
+    g.stroke();
+    /* eyes + maw */
+    g.fillStyle = rgba([255, 40, 90], 0.9 * pulse);
+    g.shadowColor = 'rgba(255,20,80,0.9)'; g.shadowBlur = 8 * s;
+    g.beginPath(); g.ellipse(hx - 5 * s, by - hh * 0.78, 3.2 * s, 2.4 * s, 0, 0, 6.29); g.fill();
+    g.beginPath(); g.ellipse(hx + 5 * s, by - hh * 0.78, 3.2 * s, 2.4 * s, 0, 0, 6.29); g.fill();
+    g.fillStyle = '#fff0f5';
+    g.beginPath(); g.arc(hx - 5 * s, by - hh * 0.78, 1.2 * s, 0, 6.29); g.fill();
+    g.beginPath(); g.arc(hx + 5 * s, by - hh * 0.78, 1.2 * s, 0, 6.29); g.fill();
+    g.shadowBlur = 0;
+    g.fillStyle = rgba([120, 0, 30], 0.85);
+    g.beginPath(); g.ellipse(hx, by - hh * 0.62, 5 * s, 3 * s, 0, 0, 6.29); g.fill();
   }
 }
 function drawBanner(x, y, s) {
+  drawGroundShadow(x, y, s * 0.6, 0.4);
   g.strokeStyle = '#2c2a20'; g.lineWidth = Math.max(1, 2.5 * s);
-  g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 55 * s); g.stroke();
+  g.beginPath(); g.moveTo(x, y); g.lineTo(x, y - 58 * s); g.stroke();
   g.fillStyle = '#ffd24a';
-  g.beginPath(); g.moveTo(x, y - 55*s); g.lineTo(x + 20*s, y - 48*s); g.lineTo(x, y - 41*s);
+  g.beginPath(); g.moveTo(x, y - 58 * s); g.lineTo(x + 22 * s, y - 50 * s); g.lineTo(x, y - 42 * s);
   g.closePath(); g.fill();
-  g.fillStyle = '#1c1a14';
-  g.beginPath(); g.arc(x, y - 26*s, 6*s, 0, 6.29); g.fill();   /* head */
-  g.fillRect(x - 5*s, y - 22*s, 10*s, 22*s);                    /* body */
+  /* tiny rider silhouette with volume */
+  g.fillStyle = '#1a1520';
+  g.beginPath(); g.arc(x, y - 28 * s, 7 * s, 0, 6.29); g.fill();
+  g.fillStyle = '#3a3050';
+  g.fillRect(x - 6 * s, y - 24 * s, 12 * s, 24 * s);
+  g.fillStyle = '#c8a050';
+  g.fillRect(x - 7 * s, y - 18 * s, 14 * s, 4 * s);
 }
 
-/* palette for one depth row: env colors fogged toward distance */
+/* palette for one depth row: lit / mid / shade for volume */
 function rowPalette(env, fogT, night) {
   const f = c => rgb(colLerp(c, env.fog, fogT));
+  const mount = colLerp(env.sil, [76, 80, 108], 0.45);
+  const hill = colLerp(env.sil, [86, 104, 70], 0.5);
+  const down = colLerp(env.sil, [120, 130, 88], 0.5);
+  const tree = colLerp(env.sil, [24, 66, 38], 0.65);
+  const tree2 = colLerp(env.sil, [34, 84, 48], 0.65);
+  const stone = colLerp(env.sil, [110, 106, 124], 0.55);
+  const roof = colLerp(env.sil, [96, 52, 44], 0.6);
   return {
-    mount: f(colLerp(env.sil, [76, 80, 108], 0.45)),
-    snow:  f([225, 228, 240]),
-    hill:  f(colLerp(env.sil, [86, 104, 70], 0.5)),
-    down:  f(colLerp(env.sil, [120, 130, 88], 0.5)),
-    tree:  f(colLerp(env.sil, [24, 66, 38], 0.65)),
-    tree2: f(colLerp(env.sil, [34, 84, 48], 0.65)),
-    stone: f(colLerp(env.sil, [110, 106, 124], 0.55)),
-    roof:  f(colLerp(env.sil, [96, 52, 44], 0.6)),
-    dark:  f(env.sil.map(c => c * 0.5)),
-    dead:  f(colLerp(env.sil, [58, 44, 70], 0.6)),
-    window:'#ffd98a',
-    banner:'#e8b23a',
+    mount: f(mount),
+    mountLit: f(colLerp(mount, [140, 145, 170], 0.35)),
+    mountShade: f(colLerp(mount, [30, 32, 48], 0.45)),
+    mountHi: f(colLerp(mount, [200, 205, 220], 0.4)),
+    snow: f([230, 234, 245]),
+    hill: f(hill),
+    hillLit: f(colLerp(hill, [130, 150, 90], 0.35)),
+    down: f(down),
+    downLit: f(colLerp(down, [160, 170, 110], 0.3)),
+    tree: f(tree2),
+    treeLit: f(colLerp(tree2, [70, 140, 70], 0.4)),
+    treeDark: f(colLerp(tree, [10, 40, 20], 0.4)),
+    trunk: f([55, 38, 28]),
+    trunkLit: f([90, 65, 45]),
+    stone: f(stone),
+    stoneLit: f(colLerp(stone, [170, 165, 180], 0.35)),
+    stoneShade: f(colLerp(stone, [50, 48, 62], 0.4)),
+    roof: f(roof),
+    roofShade: f(colLerp(roof, [40, 20, 20], 0.4)),
+    dark: f(env.sil.map(c => c * 0.45)),
+    dead: f(colLerp(env.sil, [58, 44, 70], 0.6)),
+    grassTuft: f(colLerp(env.grass || env.ground, [50, 110, 40], 0.5)),
+    window: night ? '#ffe0a0' : '#ffd98a',
+    banner: '#e8b23a',
   };
 }
 
@@ -745,7 +1177,7 @@ const rowY = d => HORIZON + (H - HORIZON - 6) * (1.25 / (d + 0.25)) - 6;
 function drawFeature(tile, x, y, s, tx, ty, P, time, night) {
   switch (tile.t) {
     case 'mountains': drawMountains(x, y, s, tx, ty, P); break;
-    case 'forest':    drawForest(x, y, s, tx, ty, P); break;
+    case 'forest':    drawForest(x, y, s, tx, ty, P, time); break;
     case 'hills':     drawHills(x, y, s, tx, ty, P); break;
     case 'downs':     drawDowns(x, y, s, tx, ty, P); break;
     case 'keep':      drawKeep(x, y, s, tx, ty, P, false, night); break;
@@ -754,25 +1186,50 @@ function drawFeature(tile, x, y, s, tx, ty, P, time, night) {
     case 'tower':     drawTower(x, y, s, tx, ty, P, night); break;
     case 'wasteland': drawWaste(x, y, s, tx, ty, P); break;
     case 'rift':      drawRift(x, y, s, time, 0); break;
+    case 'plains':
+      /* sparse near ground clutter only when close */
+      if (s > 0.55) {
+        g.fillStyle = P.grassTuft;
+        for (let i = 0; i < 3; i++) {
+          const gx = x + (tRand(tx, ty, i + 70) - 0.5) * 120 * s;
+          g.fillRect(gx, y - 4 * s, 2 * s, 4 * s);
+        }
+      }
+      break;
   }
   if (tile.corrupt && tile.t !== 'rift') drawCorruptMark(x, y, s, tx, ty);
 }
 
 function renderPanorama(lord, time) {
+  tickCam(time);
   const hour = 6 + (AP_PER_DAY - lord.ap) * HOUR_STEP;
   const doom = world.corruptR / 48;
   const env = envColors(hour, doom);
   const night = hour >= 20 || hour < 6;
 
+  /* world is drawn under a camera transform so turns/steps feel continuous */
+  g.save();
+  const pivotX = W / 2, pivotY = HORIZON + (H - HORIZON) * 0.55;
+  const bobY = Math.sin(time * 14) * cam.bob * 7 + cam.bob * 3;
+  const panX = cam.pan * 95;
+  const z = 1 + cam.zoom + cam.bob * 0.02;
+  g.translate(pivotX + panX, pivotY + bobY);
+  g.rotate(cam.roll + cam.pan * 0.02);
+  g.scale(z, z);
+  g.translate(-pivotX, -pivotY);
+
   drawSky(env, hour, time);
   drawRiftHorizonGlow(lord, time);
-  drawGroundPlane(env);
+  drawGroundPlane(env, lord, time);
 
   const fwd = DIRS[lord.face], rt = DIRS[(lord.face + 2) % 8];
   let hordeNear = false;
+  /* motion offset so features slide sideways/vertically during steps */
+  const slideX = cam.pan * 40;
+  const slideY = -cam.zoom * 55;
 
   for (let d = MAXD; d >= 1; d--) {
-    const s = rowScale(d), y = rowY(d);
+    const s = rowScale(d), y = rowY(d) + slideY * (1 / (d + 0.5));
     const spacing = 300 * s + 14;
     const kmax = Math.ceil((W / 2) / spacing) + 1;
     const fogT = Math.min(0.85, (d - 1) * 0.14);
@@ -781,7 +1238,7 @@ function renderPanorama(lord, time) {
     const drawCell = k => {
       const tx = lord.x + fwd.dx * d + rt.dx * k;
       const ty = lord.y + fwd.dy * d + rt.dy * k;
-      const x = W / 2 + k * spacing;
+      const x = W / 2 + k * spacing + slideX * (0.3 + 0.7 / d);
       const tile = tileAt(tx, ty) || { t: 'mountains', corrupt: false };
       drawFeature(tile, x, y, s, tx, ty, P, time, night);
       if (inMap(tx, ty)) {
@@ -793,9 +1250,25 @@ function renderPanorama(lord, time) {
     };
     for (let k = kmax; k > 0; k--) { drawCell(-k); drawCell(k); }
     drawCell(0);
+
+    /* depth fog veil between rows */
+    if (d > 2) {
+      g.fillStyle = rgba(env.fog, 0.04 + fogT * 0.06);
+      g.fillRect(0, HORIZON, W, y - HORIZON + 20);
+    }
   }
 
-  /* location text, LoM style */
+  /* motion blur streak when turning hard */
+  if (Math.abs(cam.pan) > 0.35) {
+    g.fillStyle = rgba(env.fog, Math.min(0.2, Math.abs(cam.pan) * 0.12));
+    const dir = cam.pan > 0 ? 1 : -1;
+    for (let i = 0; i < 6; i++) {
+      g.fillRect(dir > 0 ? W - 20 - i * 30 : i * 30, 0, 14, H);
+    }
+  }
+  g.restore();
+
+  /* HUD text stays screen-stable */
   const here = tileAt(lord.x, lord.y);
   const atStr = here.place ? `at the ${here.place.name}` : (TERRAIN_AT[here.t] || 'on the plains');
   let aheadStr = 'the open plains';
@@ -823,7 +1296,6 @@ function renderPanorama(lord, time) {
     g.font = '600 14px Georgia, serif';
     g.fillText('An Abyssal horde is near!', 18, 96);
   }
-  /* compass */
   g.fillStyle = '#ffd98a'; g.font = '700 26px Georgia, serif'; g.textAlign = 'center';
   g.fillText(DIRSHORT[lord.face], W - 50, 40);
   g.font = '11px Georgia, serif'; g.fillStyle = '#9d95c0';
@@ -916,32 +1388,103 @@ function renderGameOver(time) {
 /* ------------------------------- portrait ------------------------------- */
 function drawPortrait(lord) {
   const r = mulberry32(lord.seed * 1000 + 17);
-  const skin = [[214,178,148],[188,146,116],[160,120,94],[226,192,166]][ (r()*4)|0 ];
-  const cloth = [[70,60,120],[110,50,60],[50,90,70],[100,80,40],[60,80,110]][ (r()*5)|0 ];
-  const helm = r() > 0.45;
+  const skin = [[214,178,148],[188,146,116],[160,120,94],[226,192,166],[200,160,130]][ (r()*5)|0 ];
+  const skinShade = skin.map(c => c * 0.72);
+  const skinHi = skin.map(c => Math.min(255, c * 1.12));
+  const cloth = [[70,60,120],[110,50,60],[50,90,70],[100,80,40],[60,80,110],[90,70,50]][ (r()*6)|0 ];
+  const hairC = [[40,28,20],[70,50,30],[30,30,35],[90,70,40],[20,20,22]][ (r()*5)|0 ];
+  const helm = r() > 0.42;
+  const beard = !helm && r() > 0.4;
   pg.clearRect(0, 0, 72, 72);
-  const bgr = pg.createLinearGradient(0, 0, 0, 72);
-  bgr.addColorStop(0, '#241f3a'); bgr.addColorStop(1, '#121020');
+  /* atmospheric backdrop */
+  const bgr = pg.createRadialGradient(36, 28, 4, 36, 40, 48);
+  bgr.addColorStop(0, '#3a3058'); bgr.addColorStop(0.6, '#1a162e'); bgr.addColorStop(1, '#0c0a16');
   pg.fillStyle = bgr; pg.fillRect(0, 0, 72, 72);
-  pg.fillStyle = rgb(cloth);                                  /* shoulders */
-  pg.beginPath(); pg.ellipse(36, 74, 30, 22, 0, Math.PI, 0); pg.fill();
-  pg.fillStyle = rgb(skin);                                   /* face */
-  pg.beginPath(); pg.ellipse(36, 38, 13, 16, 0, 0, 6.29); pg.fill();
+  /* cloak / shoulders with folds */
+  const cloak = pg.createLinearGradient(10, 50, 62, 72);
+  cloak.addColorStop(0, rgb(cloth.map(c => c * 0.7)));
+  cloak.addColorStop(0.5, rgb(cloth));
+  cloak.addColorStop(1, rgb(cloth.map(c => c * 0.55)));
+  pg.fillStyle = cloak;
+  pg.beginPath(); pg.ellipse(36, 76, 32, 24, 0, Math.PI, 0); pg.fill();
+  pg.fillStyle = rgb(cloth.map(c => Math.min(255, c * 1.25)));
+  pg.beginPath(); pg.ellipse(28, 62, 8, 5, -0.4, 0, 6.29); pg.fill();
+  /* neck */
+  pg.fillStyle = rgb(skinShade);
+  pg.fillRect(31, 48, 10, 10);
+  /* head volume */
+  const faceG = pg.createLinearGradient(24, 24, 48, 52);
+  faceG.addColorStop(0, rgb(skinHi));
+  faceG.addColorStop(0.45, rgb(skin));
+  faceG.addColorStop(1, rgb(skinShade));
+  pg.fillStyle = faceG;
+  pg.beginPath(); pg.ellipse(36, 38, 14, 17, 0, 0, 6.29); pg.fill();
+  /* ear */
+  pg.fillStyle = rgb(skin);
+  pg.beginPath(); pg.ellipse(23, 38, 3, 5, 0, 0, 6.29); pg.fill();
+  pg.beginPath(); pg.ellipse(49, 38, 3, 5, 0, 0, 6.29); pg.fill();
+  /* hair under helm / hood */
+  if (!helm) {
+    pg.fillStyle = rgb(hairC);
+    pg.beginPath(); pg.ellipse(36, 28, 15, 12, 0, Math.PI, 0); pg.fill();
+    pg.fillRect(22, 28, 5, 14); pg.fillRect(45, 28, 5, 14);
+  }
   if (helm) {
-    pg.fillStyle = '#8b8fa8';
-    pg.beginPath(); pg.arc(36, 34, 15, Math.PI, 0); pg.fill();
-    pg.fillRect(21, 32, 30, 5);
-    pg.fillRect(33, 32, 6, 14);                               /* nose guard */
+    const metal = pg.createLinearGradient(20, 18, 52, 40);
+    metal.addColorStop(0, '#c8ccd8'); metal.addColorStop(0.4, '#8b8fa8'); metal.addColorStop(1, '#4a4e62');
+    pg.fillStyle = metal;
+    pg.beginPath(); pg.arc(36, 34, 16, Math.PI, 0); pg.fill();
+    pg.fillRect(20, 32, 32, 6);
+    pg.fillStyle = '#3a3e50';
+    pg.fillRect(33, 32, 6, 16); /* nose guard */
+    pg.fillStyle = '#d0d4e0';
+    pg.fillRect(22, 22, 3, 8); pg.fillRect(47, 22, 3, 8); /* rivets */
   } else {
-    pg.fillStyle = rgb(cloth.map(c => c * 0.6));              /* hood */
-    pg.beginPath(); pg.arc(36, 33, 16, Math.PI * 0.95, Math.PI * 0.05); pg.fill();
+    pg.fillStyle = rgb(cloth.map(c => c * 0.55));
+    pg.beginPath(); pg.arc(36, 32, 17, Math.PI * 0.95, Math.PI * 0.05); pg.fill();
+    pg.fillStyle = rgb(cloth.map(c => c * 0.85));
+    pg.beginPath(); pg.arc(36, 34, 12, Math.PI * 1.05, Math.PI * -0.05); pg.fill();
   }
-  if (r() > 0.5 && !helm) {                                   /* beard */
-    pg.fillStyle = ['#5a4632','#777','#3a2e22'][ (r()*3)|0 ];
-    pg.beginPath(); pg.ellipse(36, 50, 10, 7, 0, 0, Math.PI); pg.fill();
+  /* brows */
+  pg.strokeStyle = rgb(hairC.map(c => c * 0.8));
+  pg.lineWidth = 1.5;
+  pg.beginPath(); pg.moveTo(27, 35); pg.lineTo(33, 34); pg.stroke();
+  pg.beginPath(); pg.moveTo(39, 34); pg.lineTo(45, 35); pg.stroke();
+  /* eyes with whites + iris + catchlight */
+  pg.fillStyle = '#f2efe8';
+  pg.beginPath(); pg.ellipse(30, 39, 3.2, 2.4, 0, 0, 6.29); pg.fill();
+  pg.beginPath(); pg.ellipse(42, 39, 3.2, 2.4, 0, 0, 6.29); pg.fill();
+  const iris = ['#3a4a6a', '#4a3a28', '#2a4a3a', '#4a3a5a'][ (r()*4)|0 ];
+  pg.fillStyle = iris;
+  pg.beginPath(); pg.arc(30, 39, 1.8, 0, 6.29); pg.fill();
+  pg.beginPath(); pg.arc(42, 39, 1.8, 0, 6.29); pg.fill();
+  pg.fillStyle = '#0a0a10';
+  pg.beginPath(); pg.arc(30.3, 39, 0.9, 0, 6.29); pg.fill();
+  pg.beginPath(); pg.arc(42.3, 39, 0.9, 0, 6.29); pg.fill();
+  pg.fillStyle = 'rgba(255,255,255,0.85)';
+  pg.fillRect(29, 38, 1.2, 1.2); pg.fillRect(41, 38, 1.2, 1.2);
+  /* nose */
+  pg.strokeStyle = rgb(skinShade);
+  pg.lineWidth = 1.2;
+  pg.beginPath(); pg.moveTo(36, 40); pg.lineTo(34, 46); pg.lineTo(38, 46); pg.stroke();
+  /* mouth */
+  pg.strokeStyle = rgb(skinShade.map(c => c * 0.85));
+  pg.beginPath(); pg.moveTo(32, 50); pg.quadraticCurveTo(36, 52, 40, 50); pg.stroke();
+  if (beard) {
+    const bg = pg.createLinearGradient(36, 48, 36, 62);
+    bg.addColorStop(0, rgb(hairC)); bg.addColorStop(1, 'rgba(0,0,0,0)');
+    pg.fillStyle = bg;
+    pg.beginPath(); pg.ellipse(36, 54, 11, 9, 0, 0, Math.PI); pg.fill();
   }
-  pg.fillStyle = '#1a1626';                                   /* eyes */
-  pg.fillRect(29, 38, 4, 3); pg.fillRect(39, 38, 4, 3);
+  /* armor collar */
+  pg.fillStyle = rgb(colLerp(cloth, [180, 160, 90], 0.35));
+  pg.fillRect(24, 56, 24, 4);
+  pg.fillStyle = 'rgba(255,220,140,0.35)';
+  pg.fillRect(34, 56, 4, 4);
+  /* soft rim light */
+  pg.strokeStyle = 'rgba(200,190,255,0.25)';
+  pg.lineWidth = 2;
+  pg.beginPath(); pg.ellipse(36, 38, 14.5, 17.5, 0, -0.8, 0.6); pg.stroke();
 }
 
 /* ------------------------------- minimap -------------------------------- */
@@ -1068,13 +1611,16 @@ const modalOpen = () => state.modals.length > 0;
 /* ================================================================ ACTIONS */
 function turn(dir) {
   const l = activeLord();
+  if (!l) return;
   l.face = (l.face + (dir > 0 ? 1 : 7)) % 8;
+  kickTurn(dir > 0 ? 1 : -1);
 }
-function tryForward() {
+function tryStep(sign) {
+  /* sign +1 = forward (facing), -1 = back (opposite) */
   const l = activeLord();
   if (!l || !l.alive) return;
-  const fwd = DIRS[l.face];
-  const nx = l.x + fwd.dx, ny = l.y + fwd.dy;
+  const dir = DIRS[sign > 0 ? l.face : (l.face + 4) % 8];
+  const nx = l.x + dir.dx, ny = l.y + dir.dy;
   const t = tileAt(nx, ny);
   if (!t || t.t === 'mountains') {
     showModal(`<h3>No Way Through</h3>The mountains bar your path. You must find another way.`);
@@ -1089,7 +1635,6 @@ function tryForward() {
         `<h3>Night Draws Near</h3>${esc(l.name)} is too weary to go on — but <b>${others.length}</b> other lord${others.length > 1 ? 's still have' : ' still has'} daylight left.<br>` +
         `<small style="color:#9d95c0">Continue to command the next lord with hours left, or press <b>R</b> to rest the whole host.</small>`,
         () => {
-          /* jump to the next living lord who still has daylight */
           const n = state.lords.length;
           for (let i = 1; i <= n; i++) {
             const idx = (state.active + i) % n;
@@ -1103,17 +1648,20 @@ function tryForward() {
     }
     return;
   }
-  /* battle bars the way */
   const en = world.enemies.find(e => e.x === nx && e.y === ny);
   if (en) {
     l.ap = Math.max(0, l.ap - 1);
+    kickMove(sign);
     battle(stackAt(l.x, l.y), en, false, () => {
-      if (!world.enemies.includes(en) && l.alive) { moveLordTo(l, nx, ny, 0); }
+      if (!world.enemies.includes(en) && l.alive) { moveLordTo(l, nx, ny, 0); kickMove(sign); }
     });
     return;
   }
+  kickMove(sign);
   moveLordTo(l, nx, ny, cost);
 }
+function tryForward() { tryStep(1); }
+function tryBackward() { tryStep(-1); }
 function moveLordTo(l, nx, ny, cost) {
   l.x = nx; l.y = ny;
   l.ap = Math.max(0, l.ap - cost);
@@ -1606,9 +2154,16 @@ function openPause() {
 }
 function closePause() { $('ovPause').classList.add('hidden'); }
 async function quitGame() {
-  if (state && state.screen === 'play' && !modalOpen()) await autoSave();
-  if (window.lotApp && window.lotApp.quit) window.lotApp.quit();
-  else window.close();
+  try {
+    if (state && state.screen === 'play' && !modalOpen()) await autoSave();
+  } catch { /* still quit */ }
+  shutdownRenderer();
+  try {
+    if (window.lotApp && window.lotApp.quit) await window.lotApp.quit();
+    else window.close();
+  } catch {
+    window.close();
+  }
 }
 async function startGame() {
   await clearPersistedSave();
@@ -1734,6 +2289,7 @@ function dispatch(act) {
     case 'turnLeft':  turn(-1); updateHUD(); break;
     case 'turnRight': turn(1);  updateHUD(); break;
     case 'forward':   tryForward(); break;
+    case 'back':      tryBackward(); break;
     case 'rest':      doRest(); break;
     case 'nextLord':  switchLord(1); break;
     case 'prevLord':  switchLord(-1); break;
@@ -1754,7 +2310,8 @@ cv.addEventListener('click', e => {
 
 const KEYMAP = {
   ArrowLeft:'turnLeft', a:'turnLeft', ArrowRight:'turnRight', d:'turnRight',
-  ArrowUp:'forward', w:'forward', r:'rest', m:'toggleMap', Tab:'nextLord', n:'nextLord',
+  ArrowUp:'forward', w:'forward', ArrowDown:'back', x:'back',
+  r:'rest', m:'toggleMap', Tab:'nextLord', n:'nextLord',
   Enter:'confirm', ' ':'confirm', Escape:'cancel', f:'forward',
   u:'toggleMusic',                          /* ♪ music on/off */
   q:'prevLord',                             /* previous lord (LB / Q) */
@@ -1814,11 +2371,24 @@ function pollGamepad() {
   const ayd = ay < -dz ? -1 : ay > dz ? 1 : 0;
   if (axd !== 0 && axisPrev[0] === 0) dispatch(axd < 0 ? 'turnLeft' : 'turnRight');
   if (ayd === -1 && axisPrev[1] === 0) dispatch(modalOpen() ? 'confirm' : 'forward');
+  if (ayd === 1 && axisPrev[1] === 0 && !modalOpen()) dispatch('back');
   axisPrev = [axd, ayd];
 }
 
 /* =============================================================== MAIN LOOP */
+let rafId = 0;
+let rendererAlive = true;
+function shutdownRenderer() {
+  if (!rendererAlive) return;
+  rendererAlive = false;
+  stopMusic();
+  if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+}
+window.addEventListener('pagehide', shutdownRenderer);
+window.addEventListener('beforeunload', shutdownRenderer);
+
 function frame(ts) {
+  if (!rendererAlive) return;
   const time = ts / 1000;
   pollGamepad();
   if (state.screen === 'title') renderTitle(time);
@@ -1830,7 +2400,7 @@ function frame(ts) {
     if (state.outcome === 'victory') renderVictory(time);
     else renderGameOver(time);
   }
-  requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);
 }
 
 /* --------------------------------- boot ---------------------------------- */

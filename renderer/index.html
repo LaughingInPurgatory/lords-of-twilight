@@ -220,9 +220,9 @@
         <div id="continueHint" class="hidden"></div>
         <button class="btn" data-act="toggleMusic" id="musicBtnTitle" style="margin-top:6px;font-size:13px;padding:6px 16px">♪ Music: On</button>
         <div class="legend">
-          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr; or W forward<br>R rest &nbsp;M map &nbsp;Tab/Q lords<br>S save &nbsp;U music &nbsp;Esc pause</div>
+          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr;/&darr; or W/X move<br>R rest &nbsp;M map &nbsp;Tab/Q lords<br>S save &nbsp;U music &nbsp;Esc pause</div>
           <div><b>MOUSE</b>click sides of view: turn<br>click centre: forward<br>use the buttons below</div>
-          <div><b>GAMEPAD</b>d-pad/stick: turn + forward<br>A confirm &nbsp;B/Start pause &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
+          <div><b>GAMEPAD</b>d-pad/stick: turn + move<br>A confirm &nbsp;B/Start pause &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
         </div>
         <div id="titleScores">&nbsp;</div>
       </div>
@@ -233,7 +233,10 @@
       <div id="lordInfo"></div>
       <div id="hudMid">
         <button class="cbtn" data-act="turnLeft"  title="Turn left (←)">&#10554;</button>
-        <button class="cbtn" data-act="forward"   title="Forward (↑)" style="font-size:26px">&#9650;</button>
+        <div style="display:flex;flex-direction:column;gap:4px;align-items:center">
+          <button class="cbtn" data-act="forward"   title="Forward (↑)" style="font-size:26px">&#9650;</button>
+          <button class="cbtn" data-act="back"      title="Back (↓)" style="font-size:20px;width:44px;height:44px">&#9660;</button>
+        </div>
         <button class="cbtn" data-act="turnRight" title="Turn right (→)">&#10555;</button>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-left:10px">
           <button class="sbtn" data-act="rest" title="Rest until dawn (R)">REST&nbsp;(R)</button>
