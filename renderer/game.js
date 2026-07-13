@@ -12,6 +12,10 @@ const lerp  = (a, b, t) => a + (b - a) * t;
 const colLerp = (a, b, t) => [lerp(a[0],b[0],t), lerp(a[1],b[1],t), lerp(a[2],b[2],t)];
 const rgb  = c => `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`;
 const rgba = (c, a) => `rgba(${c[0]|0},${c[1]|0},${c[2]|0},${a})`;
+/* scores / player names land in innerHTML — strip markup characters */
+const esc = s => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 function mulberry32(seed) {
   let s = seed >>> 0;
@@ -41,13 +45,24 @@ const DIRSHORT = ['N','NE','E','SE','S','SW','W','NW'];
 const MAPW = 60, MAPH = 44;
 let RIFT_X = 52, RIFT_Y = 22;       /* re-anchored for every new world */
 let START_X = 6, START_Y = 22;
-const DAY_LIMIT = 90;
+/* ---- balance tunables --------------------------------------------------
+   Aimed at a ~100-day campaign: corruption reaches the Citadel near the
+   final days (dist ~46–50 × 0.50 ≈ day 92–100), seal needs a real host
+   (~half the free lords + night recruits), and night pressure is present
+   without steamrolling a careful player.                                  */
+const DAY_LIMIT = 100;
 const AP_PER_DAY = 12;
 const HOUR_STEP = 16 / AP_PER_DAY;      /* daylight spans 06:00 → 22:00 */
-const SEAL_STRENGTH = 800;
-const CORRUPT_PER_NIGHT = 0.55;
-const MAX_ENEMIES = 18;
+const SEAL_STRENGTH = 750;
+const CORRUPT_PER_NIGHT = 0.50;
+const MAX_ENEMIES = 16;
+const ENEMY_AGGRO = 6;                 /* chebyshev range for night pursuit */
+const ENEMY_SPAWN_EVERY = 4;           /* nights between new warbands */
+const RALLY_WAR = { citadel: 10, keep: 8, village: 5 };
+const BATTLE_WIN_LOSS_CAP = 0.50;      /* max fraction lost on a victory */
+const SEAL_FAIL_KEEP = 0.85;           /* strength retained after a failed seal */
 const FALLBACK_SEED = 20260707;     /* proven-good world if generation ever fails */
+const SAVE_VERSION = 1;
 
 const MOVE_COST = { plains:1, downs:1, keep:1, citadel:1, village:1, tower:1, forest:2, hills:2, wasteland:2, rift:2 };
 const TERRAIN_AHEAD = {
@@ -301,12 +316,12 @@ function tryGenWorld(seed) {
     enemies.push({ x, y, str: 100 + Math.floor(rnd() * 75) });
   }
 
-  /* the proof-walk: the Rift and every named place must be reachable */
+  /* the proof-walk: the Rift and every named place must be reachable (BFS) */
   const seen = new Uint8Array(MAPW * MAPH);
   const queue = [[START_X, START_Y]];
   seen[START_Y * MAPW + START_X] = 1;
-  while (queue.length) {
-    const [x, y] = queue.pop();
+  for (let qi = 0; qi < queue.length; qi++) {
+    const [x, y] = queue[qi];
     for (const d of DIRS) {
       const nx = x + d.dx, ny = y + d.dy;
       if (!inMap(nx, ny) || seen[ny * MAPW + nx] || tiles[ny * MAPW + nx].t === 'mountains') continue;
@@ -346,12 +361,13 @@ function reveal(cx, cy, r) {
 /* ----------------------------------------------------------------- state */
 function newGame() {
   genWorld((Math.random() * 4294967296) >>> 0);   /* a new realm every quest */
+  const battleSeed = (Math.random() * 1e9) | 0;
   state = {
     screen: state ? state.screen : 'title',
     day: 1,
     lords: [{
       name:'Lord Athelorn', title:'Heir of the Moonprince', x:START_X, y:START_Y,
-      face:2, war:120, rid:60, ap:AP_PER_DAY, alive:true, seed:7,
+      face:2, war:130, rid:70, ap:AP_PER_DAY, alive:true, seed:7,
     }],
     active: 0,
     modals: [],
@@ -359,7 +375,8 @@ function newGame() {
     endAnim: 0,
     scoreSent: false,
     stats: { battles: 0, recruited: 0 },
-    rngBattle: mulberry32((Math.random() * 1e9) | 0),
+    battleSeed,
+    rngBattle: mulberry32(battleSeed),
   };
   reveal(START_X, START_Y, 3);
   updateHUD();
@@ -372,8 +389,15 @@ function hostNearRift() {
     .reduce((s, l) => s + lordStr(l), 0);
 }
 function totalStr() { return state.lords.filter(l => l.alive).reduce((s, l) => s + lordStr(l), 0); }
-const hourNow = () => 6 + (AP_PER_DAY - activeLord().ap) * HOUR_STEP;
-function activeLord() { return state.lords[state.active]; }
+function activeLord() {
+  const l = state.lords[state.active];
+  if (l && l.alive) return l;
+  const idx = state.lords.findIndex(x => x.alive);
+  if (idx >= 0) { state.active = idx; return state.lords[idx]; }
+  return state.lords[0]; /* last fallen lord — end screen still needs a portrait */
+}
+function livingLords() { return state.lords.filter(l => l.alive); }
+function lordsWithAp() { return livingLords().filter(l => l.ap > 0); }
 function phaseName(h) {
   return h < 6 ? 'night' : h < 9 ? 'dawn' : h < 12 ? 'morning' : h < 16 ? 'afternoon' : h < 19 ? 'evening' : h < 22 ? 'dusk' : 'night';
 }
@@ -993,12 +1017,25 @@ function renderMap() {
 /* ================================================================== HUD */
 function updateHUD() {
   const l = activeLord();
+  if (!l) return;
   drawPortrait(l);
-  const pips = '●'.repeat(l.ap) + '○'.repeat(AP_PER_DAY - l.ap);
+  const aliveN = livingLords().length;
+  const pips = '●'.repeat(Math.max(0, l.ap)) + '○'.repeat(Math.max(0, AP_PER_DAY - l.ap));
+  /* ahead cost so the player can plan the last hours of daylight */
+  const fwd = DIRS[l.face];
+  const ahead = tileAt(l.x + fwd.dx, l.y + fwd.dy);
+  let aheadHint = '';
+  if (ahead && ahead.t !== 'mountains') {
+    let cost = MOVE_COST[ahead.t] || 1;
+    if (ahead.corrupt) cost += 1;
+    aheadHint = ` &nbsp;<span style="color:#6e668e">→${cost}h</span>`;
+  } else if (ahead && ahead.t === 'mountains') {
+    aheadHint = ` &nbsp;<span style="color:#6e668e">→blocked</span>`;
+  }
   $('lordInfo').innerHTML =
-    `<span class="nm">${l.name}</span><br><span class="tt">${l.title}</span><br>` +
+    `<span class="nm">${esc(l.name)}</span><br><span class="tt">${esc(l.title)}</span><br>` +
     `⚔ ${l.war} warriors &nbsp;♞ ${l.rid} riders<br>` +
-    `<span style="color:#8fd0a0">${pips}</span> &nbsp;<span style="color:#6e668e">(lord ${state.active + 1}/${state.lords.filter(x=>x.alive).length})</span>`;
+    `<span style="color:#8fd0a0">${pips}</span>${aheadHint} &nbsp;<span style="color:#6e668e">(lord ${state.active + 1}/${aliveN})</span>`;
   const host = totalStr() | 0;
   const near = hostNearRift() | 0;
   $('hudRight').innerHTML =
@@ -1035,6 +1072,7 @@ function turn(dir) {
 }
 function tryForward() {
   const l = activeLord();
+  if (!l || !l.alive) return;
   const fwd = DIRS[l.face];
   const nx = l.x + fwd.dx, ny = l.y + fwd.dy;
   const t = tileAt(nx, ny);
@@ -1045,7 +1083,24 @@ function tryForward() {
   let cost = MOVE_COST[t.t] || 1;
   if (t.corrupt) cost += 1;
   if (l.ap < cost) {
-    showModal(`<h3>Night Draws Near</h3>${l.name} is too weary to go on. Press <b>R</b> to rest until dawn.`);
+    const others = lordsWithAp().filter(x => x !== l);
+    if (others.length) {
+      showModal(
+        `<h3>Night Draws Near</h3>${esc(l.name)} is too weary to go on — but <b>${others.length}</b> other lord${others.length > 1 ? 's still have' : ' still has'} daylight left.<br>` +
+        `<small style="color:#9d95c0">Continue to command the next lord with hours left, or press <b>R</b> to rest the whole host.</small>`,
+        () => {
+          /* jump to the next living lord who still has daylight */
+          const n = state.lords.length;
+          for (let i = 1; i <= n; i++) {
+            const idx = (state.active + i) % n;
+            const cand = state.lords[idx];
+            if (cand.alive && cand.ap > 0) { state.active = idx; updateHUD(); return; }
+          }
+          switchLord(1);
+        });
+    } else {
+      showModal(`<h3>Night Draws Near</h3>${esc(l.name)} is too weary to go on. Press <b>R</b> to rest until dawn.`);
+    }
     return;
   }
   /* battle bars the way */
@@ -1065,7 +1120,7 @@ function moveLordTo(l, nx, ny, cost) {
   reveal(nx, ny, 3);
   const t = tileAt(nx, ny);
 
-  if (t.t === 'rift') { attemptSeal(l); updateHUD(); return; }
+  if (t.t === 'rift') { attemptSeal(l); updateHUD(); autoSave(); return; }
 
   if (t.place) {
     const p = t.place;
@@ -1076,9 +1131,9 @@ function moveLordTo(l, nx, ny, cost) {
         if (p.name === 'Tower of the Seer' || p.name === 'Watchtower of Morn') {
           world.riftKnown = true;
           reveal(RIFT_X, RIFT_Y, 2);
-          showModal(`<h3>${p.name}</h3><span class="arc">Visions swirl in the high chamber…</span><br>The Rift is revealed upon your map — far to the <b>east</b>, wreathed in blighted land. Only a host of <b>${SEAL_STRENGTH}</b> spears may seal it.`);
+          showModal(`<h3>${esc(p.name)}</h3><span class="arc">Visions swirl in the high chamber…</span><br>The Rift is revealed upon your map — far to the <b>east</b>, wreathed in blighted land. Only a host of <b>${SEAL_STRENGTH}</b> spears may seal it.`, () => autoSave());
         } else {
-          showModal(`<h3>${p.name}</h3>From the heights you survey the land, and your map grows.`);
+          showModal(`<h3>${esc(p.name)}</h3>From the heights you survey the land, and your map grows.`, () => autoSave());
         }
       }
     }
@@ -1092,13 +1147,16 @@ function moveLordTo(l, nx, ny, cost) {
       });
       state.stats.recruited++;
       showModal(
-        `<h3>${rec.name} ${rec.title} joins the host!</h3>` +
+        `<h3>${esc(rec.name)} ${esc(rec.title)} joins the host!</h3>` +
         `<span class="good">⚔ ${rec.war} warriors and ♞ ${rec.rid} riders swear their swords to the Quest.</span><br>` +
         `<i>"The Abyss shall not have these lands while we draw breath."</i><br>` +
-        `<small style="color:#9d95c0">Press TAB to command each lord in turn.</small>`);
+        `<small style="color:#9d95c0">Press TAB to command each lord in turn.</small>`,
+        () => autoSave());
     }
   }
   updateHUD();
+  /* autosave after quiet moves; modal paths save on continue */
+  if (!modalOpen()) autoSave();
 }
 function attemptSeal(l) {
   const host = hostNearRift();
@@ -1108,8 +1166,8 @@ function attemptSeal(l) {
       `With ${host | 0} spears gathered at the brink, ${l.name} casts the Word of Dawn into the deep. ` +
       `The Abyss howls — and the Rift seals shut forever.`);
   } else {
-    l.war = Math.max(1, Math.round(l.war * 0.8));
-    l.rid = Math.max(0, Math.round(l.rid * 0.8));
+    l.war = Math.max(1, Math.round(l.war * SEAL_FAIL_KEEP));
+    l.rid = Math.max(0, Math.round(l.rid * SEAL_FAIL_KEEP));
     const back = DIRS[(l.face + 4) % 8];
     l.x = clamp(l.x + back.dx, 1, MAPW - 2);
     l.y = clamp(l.y + back.dy, 1, MAPH - 2);
@@ -1133,7 +1191,7 @@ function battle(stack, enemy, enemyAttacks, after) {
   const names = stack.map(l => l.name).join(', ');
   let html;
   if (pEff >= eEff) {
-    const frac = clamp(0.5 * (eEff / pEff) * (0.7 + rnd() * 0.6), 0.05, 0.6);
+    const frac = clamp(0.5 * (eEff / pEff) * (0.7 + rnd() * 0.6), 0.05, BATTLE_WIN_LOSS_CAP);
     let lost = 0;
     for (const l of stack) {
       const lw = Math.round(l.war * frac), lr = Math.round(l.rid * frac);
@@ -1162,13 +1220,12 @@ function battle(stack, enemy, enemyAttacks, after) {
     if (!state.lords.some(l => l.alive)) queueEnd('gameover', 'The last of the free lords has fallen. Shadow takes the land.');
     else if (after) after();
     updateHUD();
+    autoSave();
   });
 }
 function fixActiveLord() {
-  if (!activeLord().alive) {
-    const idx = state.lords.findIndex(l => l.alive);
-    if (idx >= 0) state.active = idx;
-  }
+  /* activeLord() already re-homes onto a living lord when possible */
+  activeLord();
 }
 function queueEnd(outcome, cause) { state.pendingEnd = { outcome, cause }; }
 
@@ -1181,14 +1238,14 @@ function doRest() {
   const notes = [];
 
   /* the Abyss spawns new warbands */
-  if (state.day % 3 === 0 && world.enemies.length < MAX_ENEMIES) {
+  if (state.day % ENEMY_SPAWN_EVERY === 0 && world.enemies.length < MAX_ENEMIES) {
     const rnd = state.rngBattle;
     for (let tries = 0; tries < 20; tries++) {
       const a = rnd() * Math.PI * 2;
       const x = Math.round(RIFT_X + Math.cos(a) * 4), y = Math.round(RIFT_Y + Math.sin(a) * 4);
       const t = tileAt(x, y);
       if (t && t.t !== 'mountains' && t.t !== 'rift' && !world.enemies.some(e => e.x === x && e.y === y)) {
-        world.enemies.push({ x, y, str: Math.min(300, 100 + state.day * 3) });
+        world.enemies.push({ x, y, str: Math.min(280, 90 + state.day * 2.5) | 0 });
         notes.push('A new horde crawls from the Rift.');
         break;
       }
@@ -1198,7 +1255,7 @@ function doRest() {
   /* hordes prowl */
   const nightFights = [];
   for (const e of [...world.enemies]) {
-    let target = null, best = 8;
+    let target = null, best = ENEMY_AGGRO;
     for (const l of state.lords) {
       if (!l.alive) continue;
       const d = Math.max(Math.abs(l.x - e.x), Math.abs(l.y - e.y));
@@ -1220,8 +1277,8 @@ function doRest() {
   for (const l of state.lords) {
     if (!l.alive) continue;
     const t = tileAt(l.x, l.y);
-    if (t.place && (t.place.type === 'keep' || t.place.type === 'citadel' || t.place.type === 'village') && !t.corrupt) {
-      l.war += 6;
+    if (t.place && !t.corrupt && RALLY_WAR[t.place.type] != null) {
+      l.war += RALLY_WAR[t.place.type];
     }
     l.ap = AP_PER_DAY;
   }
@@ -1236,12 +1293,14 @@ function doRest() {
     notes.push('<span class="arc">The purple blight spreads ever westward…</span>');
   }
   if (state.day > DAY_LIMIT) {
-    queueEnd('gameover', `Ninety days have passed. The Rift yawns too wide to ever be sealed, and shadow falls upon the world.`);
+    queueEnd('gameover', `${DAY_LIMIT} days have passed. The Rift yawns too wide to ever be sealed, and shadow falls upon the world.`);
   } else if (state.day === DAY_LIMIT - 9) {
     notes.push(`<span class="bad">Only ${DAY_LIMIT - state.day} days remain!</span>`);
   }
 
-  showModal(`<h3>Night Falls — Day ${Math.min(state.day, DAY_LIMIT)}</h3>The free lords rest, and the Abyss stirs.<br>${notes.join('<br>') || 'The night passes quietly.'}`);
+  showModal(`<h3>Night Falls — Day ${Math.min(state.day, DAY_LIMIT)}</h3>The free lords rest, and the Abyss stirs.<br>${notes.join('<br>') || 'The night passes quietly.'}`, () => {
+    autoSave();
+  });
   for (const f of nightFights) battle(f.stack, f.enemy, true, null);
   updateHUD();
 }
@@ -1253,6 +1312,279 @@ function switchLord(dir) {
     if (state.lords[idx].alive) { state.active = idx; break; }
   }
   updateHUD();
+}
+
+/* ======================================================= SAVE / RESUME --
+   One quest slot. Electron writes savegame.json in the user data dir via
+   window.lotSave; without the bridge we fall back to localStorage so the
+   game is still playable if opened outside Electron.                      */
+function serializeGame() {
+  if (!world || !state || state.screen !== 'play') return null;
+  const places = world.places.map(p => ({
+    type: p.type, name: p.name, key: p.key || null,
+    x: p.x | 0, y: p.y | 0,
+    recruited: !!p.recruited, visited: !!p.visited,
+    lordKey: p.lord && p.lord.key ? p.lord.key : (p.key || null),
+  }));
+  const placeIdx = new Map(world.places.map((p, i) => [p, i]));
+  const tiles = world.tiles.map(t => ({
+    t: t.t,
+    c: t.corrupt ? 1 : 0,
+    p: t.place != null && placeIdx.has(t.place) ? placeIdx.get(t.place) : -1,
+  }));
+  return {
+    v: SAVE_VERSION,
+    savedAt: new Date().toISOString(),
+    meta: {
+      day: state.day,
+      lords: livingLords().length,
+      host: totalStr() | 0,
+    },
+    anchors: { START_X, START_Y, RIFT_X, RIFT_Y },
+    world: {
+      tiles,
+      places,
+      enemies: world.enemies.map(e => ({ x: e.x | 0, y: e.y | 0, str: e.str | 0 })),
+      discovered: Array.from(world.discovered),
+      corruptR: +world.corruptR,
+      riftKnown: !!world.riftKnown,
+    },
+    state: {
+      day: state.day | 0,
+      active: state.active | 0,
+      stats: {
+        battles: (state.stats && state.stats.battles) | 0,
+        recruited: (state.stats && state.stats.recruited) | 0,
+      },
+      battleSeed: (state.battleSeed | 0) || 1,
+      lords: state.lords.map(l => ({
+        name: String(l.name || 'Lord').slice(0, 32),
+        title: String(l.title || '').slice(0, 48),
+        x: l.x | 0, y: l.y | 0,
+        face: ((l.face | 0) % 8 + 8) % 8,
+        war: Math.max(0, l.war | 0),
+        rid: Math.max(0, l.rid | 0),
+        ap: clamp(l.ap | 0, 0, AP_PER_DAY),
+        alive: !!l.alive,
+        seed: l.seed | 0,
+      })),
+    },
+  };
+}
+
+async function persistSave(payload) {
+  if (!payload) return { ok: false, error: 'empty' };
+  try {
+    if (window.lotSave && window.lotSave.write) {
+      return await window.lotSave.write(payload);
+    }
+    localStorage.setItem('lot_save', JSON.stringify(payload));
+    return { ok: true, savedAt: payload.savedAt };
+  } catch (err) {
+    return { ok: false, error: (err && err.message) || 'write failed' };
+  }
+}
+
+async function clearPersistedSave() {
+  try {
+    if (window.lotSave && window.lotSave.clear) await window.lotSave.clear();
+    else localStorage.removeItem('lot_save');
+  } catch { /* ignore */ }
+}
+
+async function fetchSaveMeta() {
+  try {
+    if (window.lotSave && window.lotSave.meta) return await window.lotSave.meta();
+    const raw = localStorage.getItem('lot_save');
+    if (!raw) return { exists: false };
+    const data = JSON.parse(raw);
+    if (!data || data.v !== SAVE_VERSION) return { exists: false };
+    return {
+      exists: true,
+      savedAt: data.savedAt || null,
+      day: (data.meta && data.meta.day) || (data.state && data.state.day) || 1,
+      lords: (data.meta && data.meta.lords) || 1,
+      host: data.meta && data.meta.host != null ? data.meta.host : null,
+    };
+  } catch { return { exists: false }; }
+}
+
+async function fetchSaveData() {
+  try {
+    if (window.lotSave && window.lotSave.get) {
+      const res = await window.lotSave.get();
+      return res && res.ok ? res.data : null;
+    }
+    const raw = localStorage.getItem('lot_save');
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+
+function applySaveData(data) {
+  if (!data || data.v !== SAVE_VERSION || !data.world || !data.state || !data.anchors) return false;
+  const a = data.anchors;
+  START_X = a.START_X | 0; START_Y = a.START_Y | 0;
+  RIFT_X = a.RIFT_X | 0; RIFT_Y = a.RIFT_Y | 0;
+  if (!inMap(START_X, START_Y) || !inMap(RIFT_X, RIFT_Y)) return false;
+
+  const w = data.world;
+  if (!Array.isArray(w.tiles) || w.tiles.length !== MAPW * MAPH) return false;
+  if (!Array.isArray(w.places) || !Array.isArray(w.enemies)) return false;
+
+  const places = w.places.map(p => {
+    const key = p.key || p.lordKey || null;
+    const rec = key ? RECRUITS.find(r => r.key === key) : null;
+    return {
+      type: p.type,
+      name: p.name,
+      key,
+      x: p.x | 0, y: p.y | 0,
+      lord: rec || null,
+      recruited: !!p.recruited,
+      visited: !!p.visited,
+    };
+  });
+
+  const tiles = new Array(MAPW * MAPH);
+  for (let i = 0; i < MAPW * MAPH; i++) {
+    const src = w.tiles[i] || { t: 'plains', c: 0, p: -1 };
+    const pi = src.p | 0;
+    tiles[i] = {
+      t: src.t || 'plains',
+      corrupt: !!src.c,
+      place: pi >= 0 && pi < places.length ? places[pi] : null,
+    };
+  }
+
+  let discovered;
+  if (Array.isArray(w.discovered) && w.discovered.length === MAPW * MAPH) {
+    discovered = Uint8Array.from(w.discovered.map(v => v ? 1 : 0));
+  } else {
+    discovered = new Uint8Array(MAPW * MAPH);
+  }
+
+  world = {
+    tiles,
+    places,
+    enemies: w.enemies.map(e => ({ x: e.x | 0, y: e.y | 0, str: Math.max(1, e.str | 0) })),
+    discovered,
+    corruptR: Math.max(0, +w.corruptR || 0),
+    riftKnown: !!w.riftKnown,
+  };
+  applyCorruption();
+
+  const st = data.state;
+  const battleSeed = (st.battleSeed | 0) || 1;
+  const lords = (st.lords || []).map(l => ({
+    name: String(l.name || 'Lord').slice(0, 32),
+    title: String(l.title || '').slice(0, 48),
+    x: clamp(l.x | 0, 0, MAPW - 1),
+    y: clamp(l.y | 0, 0, MAPH - 1),
+    face: ((l.face | 0) % 8 + 8) % 8,
+    war: Math.max(0, l.war | 0),
+    rid: Math.max(0, l.rid | 0),
+    ap: clamp(l.ap | 0, 0, AP_PER_DAY),
+    alive: !!l.alive,
+    seed: l.seed | 0,
+  }));
+  if (!lords.length) return false;
+
+  state = {
+    screen: 'play',
+    day: Math.max(1, st.day | 0),
+    lords,
+    active: clamp(st.active | 0, 0, lords.length - 1),
+    modals: [],
+    pendingEnd: null,
+    endAnim: 0,
+    scoreSent: false,
+    stats: {
+      battles: (st.stats && st.stats.battles) | 0,
+      recruited: (st.stats && st.stats.recruited) | 0,
+    },
+    battleSeed,
+    rngBattle: mulberry32(battleSeed),
+  };
+  fixActiveLord();
+  return true;
+}
+
+async function autoSave() {
+  if (!state || state.screen !== 'play') return;
+  const snap = serializeGame();
+  if (!snap) return;
+  await persistSave(snap);
+}
+
+async function saveQuest(opts) {
+  const quiet = opts && opts.quiet;
+  if (!state || state.screen !== 'play') {
+    if (!quiet) showModal(`<h3>Nothing to Save</h3>There is no quest in progress.`);
+    return false;
+  }
+  /* never snapshot mid-modal (partial battle outcomes, etc.) */
+  if (modalOpen() && !(opts && opts.force)) {
+    if (!quiet) showModal(`<h3>Not Yet</h3>Finish the present moment, then the quest may be saved.`);
+    return false;
+  }
+  const snap = serializeGame();
+  const res = await persistSave(snap);
+  if (!quiet) {
+    if (res && res.ok) {
+      showModal(`<h3>Quest Saved</h3><span class="good">Day ${state.day}</span> is carved into the annals. You may continue this quest from the title screen.`);
+    } else {
+      showModal(`<h3>Save Failed</h3><span class="bad">The annals would not take the mark${res && res.error ? ' — ' + esc(res.error) : ''}.</span>`);
+    }
+  }
+  refreshContinueButton();
+  return !!(res && res.ok);
+}
+
+async function continueQuest() {
+  if (state && state.screen === 'play' && !pauseOpen()) return;
+  const data = await fetchSaveData();
+  if (!data) {
+    showModal(`<h3>No Saved Quest</h3>The annals hold no unfinished road. Begin a new quest.`);
+    refreshContinueButton();
+    return;
+  }
+  if (!applySaveData(data)) {
+    showModal(`<h3>Save Corrupted</h3><span class="bad">The saved quest could not be restored.</span> Begin anew.`);
+    await clearPersistedSave();
+    refreshContinueButton();
+    return;
+  }
+  closePause();
+  $('ovModal').classList.add('hidden');
+  state.modals = [];
+  state.screen = 'play';
+  syncOverlays();
+  playMusic('play');
+  updateHUD();
+  showModal(
+    `<h3>The Road Resumes</h3>` +
+    `Day <b>${state.day}</b> of ${DAY_LIMIT}. Host strength <b>${totalStr() | 0}</b>. ` +
+    `${livingLords().length} lord${livingLords().length === 1 ? '' : 's'} still ride free.<br>` +
+    `<small style="color:#9d95c0">Seal the Rift with <b>${SEAL_STRENGTH}</b> spears before corruption claims the Citadel.</small>`);
+}
+
+async function refreshContinueButton() {
+  const btn = $('continueBtn');
+  const hint = $('continueHint');
+  if (!btn) return;
+  const meta = await fetchSaveMeta();
+  if (meta && meta.exists) {
+    btn.classList.remove('hidden');
+    btn.disabled = false;
+    if (hint) {
+      const host = meta.host != null ? ` · host ${meta.host}` : '';
+      hint.textContent = `Day ${meta.day || '?'} · ${meta.lords || '?'} lord${meta.lords === 1 ? '' : 's'}${host}`;
+      hint.classList.remove('hidden');
+    }
+  } else {
+    btn.classList.add('hidden');
+    if (hint) { hint.textContent = ''; hint.classList.add('hidden'); }
+  }
 }
 
 /* ============================================================== SCREENS */
@@ -1267,16 +1599,19 @@ function syncOverlays() {
 const pauseOpen = () => !$('ovPause').classList.contains('hidden');
 function openPause() {
   $('ovPause').classList.remove('hidden');
+  autoSave(); /* silent autosave whenever the host halts */
   $('pauseScores').innerHTML = 'Consulting the annals…';
   fetchScores().then(s => renderScoreList(s, -1, 'pauseScores'))
     .catch(() => { $('pauseScores').innerHTML = '<i>The annals are unreachable.</i>'; });
 }
 function closePause() { $('ovPause').classList.add('hidden'); }
-function quitGame() {
+async function quitGame() {
+  if (state && state.screen === 'play' && !modalOpen()) await autoSave();
   if (window.lotApp && window.lotApp.quit) window.lotApp.quit();
   else window.close();
 }
-function startGame() {
+async function startGame() {
+  await clearPersistedSave();
   newGame();
   state.screen = 'play';
   syncOverlays();
@@ -1286,10 +1621,14 @@ function startGame() {
     `<i>"Ride east, Athelorn. Rally every lord who yet stands free — Ithrilan foretold that only a host of ` +
     `<b>${SEAL_STRENGTH} spears</b>, gathered at the very brink, can seal the Abyssal Rift. ` +
     `You have <b>${DAY_LIMIT} days</b> before the corruption swallows the Citadel of Dawn."</i><br>` +
-    `<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, map with M, and pause with Esc.</small>`);
+    `<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, map with M, pause with Esc. The quest auto-saves.</small>`);
   updateHUD();
+  autoSave();
+  refreshContinueButton();
 }
-function goEnd(outcome, cause) {
+async function goEnd(outcome, cause) {
+  await clearPersistedSave();
+  refreshContinueButton();
   state.screen = 'end';
   state.outcome = outcome;
   state.scoreSent = false;
@@ -1328,7 +1667,7 @@ function renderScoreList(scores, rank, elId = 'endScores') {
   const el = $(elId);
   if (!scores.length) { el.innerHTML = '<i>No names yet stand in the annals. Be the first!</i>'; return; }
   el.innerHTML = '<b>— THE ANNALS OF TWILIGHT —</b><br>' + scores.slice(0, 10).map((s, i) =>
-    `<span class="${i === rank ? 'me' : ''}">${String(i + 1).padStart(2, ' ')}. ${s.name.padEnd(16, '·')} ${String(s.score).padStart(6, ' ')}  ${s.outcome === 'victory' ? '✦' : '✝'} day ${s.days}</span>`
+    `<span class="${i === rank ? 'me' : ''}">${String(i + 1).padStart(2, ' ')}. ${esc(s.name).padEnd(16, '·')} ${String(s.score | 0).padStart(6, ' ')}  ${s.outcome === 'victory' ? '✦' : '✝'} day ${s.days | 0}</span>`
   ).join('<br>');
 }
 async function submitScore() {
@@ -1351,7 +1690,7 @@ async function loadTitleScores() {
   try {
     const scores = await fetchScores();
     $('titleScores').innerHTML = scores.length
-      ? '<b>THE ANNALS:</b> ' + scores.slice(0, 5).map((s, i) => `${i + 1}. ${s.name} ${s.score}${s.outcome === 'victory' ? '✦' : ''}`).join(' &nbsp;·&nbsp; ')
+      ? '<b>THE ANNALS:</b> ' + scores.slice(0, 5).map((s, i) => `${i + 1}. ${esc(s.name)} ${s.score | 0}${s.outcome === 'victory' ? '✦' : ''}`).join(' &nbsp;·&nbsp; ')
       : '<i>No legends yet written — be the first.</i>';
   } catch { $('titleScores').innerHTML = ''; }
 }
@@ -1361,16 +1700,32 @@ function dispatch(act) {
   if ((act === 'confirm' || act === 'cancel') && modalOpen()) { closeModal(); return; }
   switch (act) {
     case 'start':        if (state.screen === 'title') startGame(); return;
+    case 'continue':     if (state.screen === 'title' || pauseOpen()) continueQuest(); return;
     case 'restart':      if (state.screen === 'end' || pauseOpen()) startGame(); return;
     case 'resume':       closePause(); return;
+    case 'save':         if (state.screen === 'play') saveQuest(); return;
+    case 'toTitle':
+      if (state.screen === 'end' || pauseOpen()) {
+        if (state.screen === 'play') autoSave();
+        closePause();
+        state.screen = 'title';
+        syncOverlays();
+        loadTitleScores();
+        refreshContinueButton();
+        playMusic('title');
+      }
+      return;
     case 'quit':         quitGame(); return;
-    case 'toTitle':      if (state.screen === 'end') { state.screen = 'title'; syncOverlays(); loadTitleScores(); playMusic('title'); } return;
     case 'submitScore':  submitScore(); return;
     case 'toggleMusic':  setMusic(!musicOn); return;   /* works on any screen */
   }
   if (state.screen !== 'play' || modalOpen()) return;
   /* pause menu takes precedence over all other play input */
-  if (pauseOpen()) { if (act === 'cancel' || act === 'toggleMap') closePause(); return; }
+  if (pauseOpen()) {
+    /* Esc / B / M / Enter / Space / Start all dismiss pause */
+    if (act === 'cancel' || act === 'toggleMap' || act === 'confirm' || act === 'forward' || act === 'resume') closePause();
+    return;
+  }
   const mapUp = !$('ovMap').classList.contains('hidden');
   if (act === 'toggleMap') { $('ovMap').classList.toggle('hidden'); return; }
   if (mapUp) { if (act === 'cancel') $('ovMap').classList.add('hidden'); return; }
@@ -1401,6 +1756,9 @@ const KEYMAP = {
   ArrowLeft:'turnLeft', a:'turnLeft', ArrowRight:'turnRight', d:'turnRight',
   ArrowUp:'forward', w:'forward', r:'rest', m:'toggleMap', Tab:'nextLord', n:'nextLord',
   Enter:'confirm', ' ':'confirm', Escape:'cancel', f:'forward',
+  u:'toggleMusic',                          /* ♪ music on/off */
+  q:'prevLord',                             /* previous lord (LB / Q) */
+  s:'save',                                 /* save quest */
 };
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') {
@@ -1420,7 +1778,12 @@ document.addEventListener('keydown', e => {
 /* gamepad — edge-detected standard mapping */
 let padConnected = false;
 let padPrev = [];
-const PAD_ACTS = { 0:'confirmA', 1:'cancel', 2:'rest', 3:'toggleMap', 4:'prevLord', 5:'nextLord', 9:'confirmA', 12:'forward', 13:'rest', 14:'turnLeft', 15:'turnRight' };
+/* 0=A 1=B 2=X 3=Y 4=LB 5=RB 9=Start 12–15=D-pad */
+const PAD_ACTS = {
+  0:'confirmA', 1:'cancel', 2:'rest', 3:'toggleMap',
+  4:'prevLord', 5:'nextLord', 9:'startBtn',
+  12:'forward', 13:'rest', 14:'turnLeft', 15:'turnRight',
+};
 let axisPrev = [0, 0];
 window.addEventListener('gamepadconnected', () => { padConnected = true; if (state) updateHUD(); });
 window.addEventListener('gamepaddisconnected', () => { padConnected = false; if (state) updateHUD(); });
@@ -1435,6 +1798,11 @@ function pollGamepad() {
       let act = PAD_ACTS[i];
       if (act === 'confirmA') {
         act = modalOpen() ? 'confirm' : state.screen === 'title' ? 'start' : state.screen === 'end' ? 'restart' : 'forward';
+      } else if (act === 'startBtn') {
+        /* Start: begin from title, restart from end, otherwise pause/resume */
+        act = state.screen === 'title' ? 'start'
+          : state.screen === 'end' ? 'restart'
+          : pauseOpen() ? 'resume' : 'cancel';
       }
       if (act) dispatch(act);
     }
@@ -1455,7 +1823,8 @@ function frame(ts) {
   pollGamepad();
   if (state.screen === 'title') renderTitle(time);
   else if (state.screen === 'play') {
-    renderPanorama(activeLord(), time);
+    const lord = activeLord();
+    if (lord) renderPanorama(lord, time);
     if (!$('ovMap').classList.contains('hidden')) renderMap();
   } else if (state.screen === 'end') {
     if (state.outcome === 'victory') renderVictory(time);
@@ -1469,6 +1838,14 @@ newGame();
 state.screen = 'title';
 syncOverlays();
 loadTitleScores();
+refreshContinueButton();
 playMusic('title');
 updateMusicUI();
+if (window.lotSave) {
+  if (window.lotSave.onMenuSave) window.lotSave.onMenuSave(() => dispatch('save'));
+  if (window.lotSave.onMenuContinue) window.lotSave.onMenuContinue(() => {
+    if (state.screen === 'title') dispatch('continue');
+    else if (state.screen === 'play' && !pauseOpen()) openPause();
+  });
+}
 requestAnimationFrame(frame);

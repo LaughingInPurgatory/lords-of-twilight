@@ -1,7 +1,7 @@
 {
   "name": "lords-of-twilight",
   "productName": "Lords of Twilight",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "A retro-modern strategy/adventure game in the spirit of Lords of Midnight — a fully self-contained Electron desktop app.",
   "author": "schtufbox <gkorbey@gmail.com>",
   "license": "MIT",
@@ -10,10 +10,10 @@
     "start": "electron .",
     "icon": "node scripts/make-icon.js",
     "dist": "electron-builder -mwl",
-    "dist:mac": "electron-builder --mac dmg",
-    "dist:win": "electron-builder --win nsis zip",
-    "dist:win:nowine": "electron-builder --win zip",
-    "dist:linux": "electron-builder --linux AppImage"
+    "dist:mac": "electron-builder --mac dmg --arm64 --x64",
+    "dist:win": "electron-builder --win nsis zip --x64 --arm64",
+    "dist:win:nowine": "electron-builder --win zip --x64 --arm64",
+    "dist:linux": "electron-builder --linux AppImage --x64 --arm64"
   },
   "devDependencies": {
     "electron": "^31.7.6",
