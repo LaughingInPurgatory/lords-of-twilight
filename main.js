@@ -186,7 +186,7 @@ function buildMenu() {
     },
     {
       label: 'Help',
-      submenu: [{ label: 'Project on GitHub', click: () => shell.openExternal('https://github.com/schtufbox/lords-of-twilight') }],
+      submenu: [{ label: 'Project on GitHub', click: () => shell.openExternal('https://github.com/LaughingInPurgatory/lords-of-twilight') }],
     },
   ]));
 }

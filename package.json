@@ -3,7 +3,7 @@
   "productName": "Lords of Twilight",
   "version": "2.2.0",
   "description": "A retro-modern strategy/adventure game in the spirit of Lords of Midnight — a fully self-contained Electron desktop app.",
-  "author": "schtufbox <gkorbey@gmail.com>",
+  "author": "LaughingInPurgatory <gkorbey@gmail.com>",
   "license": "MIT",
   "main": "main.js",
   "scripts": {

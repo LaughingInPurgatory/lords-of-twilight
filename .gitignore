@@ -7,3 +7,8 @@ highscores.txt
 # Electron packaging
 node_modules/
 dist/
+
+# local / editor
+Claude.md
+CLAUDE.md
+.gitignore
