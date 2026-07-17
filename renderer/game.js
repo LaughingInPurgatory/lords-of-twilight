@@ -379,50 +379,6 @@ function syncWorld3D() {
   if (window.Lot3D) window.Lot3D.rebuild(world, MAPW, MAPH);
 }
 
-/* Dev: ?testRift=1 or LOT_TEST_RIFT=1 — stand next to the Rift, play screen. */
-const TEST_RIFT = /(?:\?|&)testRift=1(?:&|$)/.test(location.search || '');
-
-function faceToward(fromX, fromY, toX, toY) {
-  const dx = Math.sign(toX - fromX), dy = Math.sign(toY - fromY);
-  let best = 0, bestDot = -1e9;
-  for (let f = 0; f < 8; f++) {
-    const d = DIRS[f];
-    const dot = d.dx * dx + d.dy * dy;
-    if (dot > bestDot) { bestDot = dot; best = f; }
-  }
-  return best;
-}
-
-/** Place the active lord on a walkable tile adjacent to the Rift, facing it. */
-function warpBesideRift() {
-  const l = activeLord();
-  if (!l || !world) return;
-  let bx = RIFT_X - 1, by = RIFT_Y, found = false;
-  /* prefer west of rift (approach from citadel side), else any walkable neighbour */
-  const order = [
-    { dx: -1, dy: 0 }, { dx: -1, dy: -1 }, { dx: -1, dy: 1 },
-    { dx: 0, dy: -1 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 },
-    { dx: 1, dy: -1 }, { dx: 1, dy: 1 },
-  ];
-  for (const d of order) {
-    const nx = RIFT_X + d.dx, ny = RIFT_Y + d.dy;
-    const t = tileAt(nx, ny);
-    if (t && t.t !== 'mountains' && t.t !== 'rift') {
-      bx = nx; by = ny; found = true; break;
-    }
-  }
-  if (!found) { bx = clamp(RIFT_X - 1, 0, MAPW - 1); by = RIFT_Y; }
-  l.x = bx; l.y = by;
-  l.face = faceToward(bx, by, RIFT_X, RIFT_Y);
-  l.ap = AP_PER_DAY;
-  world.riftKnown = true;
-  reveal(bx, by, 6);
-  reveal(RIFT_X, RIFT_Y, 3);
-  reveal(START_X, START_Y, 2);
-  syncWorld3D();
-  updateHUD();
-}
-
 function newGame() {
   genWorld((Math.random() * 4294967296) >>> 0);   /* a new realm every quest */
   syncWorld3D();
@@ -444,7 +400,6 @@ function newGame() {
     rngBattle: mulberry32(battleSeed),
   };
   reveal(START_X, START_Y, 3);
-  if (TEST_RIFT) warpBesideRift();
   updateHUD();
 }
 
@@ -2568,18 +2523,11 @@ function frame(ts) {
 
 /* --------------------------------- boot ---------------------------------- */
 newGame();
-if (TEST_RIFT) {
-  state.screen = 'play';
-  syncOverlays();
-  playMusic('play');
-  console.log('LOT_TEST_RIFT: lord at', activeLord().x, activeLord().y, 'rift', RIFT_X, RIFT_Y);
-} else {
-  state.screen = 'title';
-  syncOverlays();
-  loadTitleScores();
-  refreshContinueButton();
-  playMusic('title');
-}
+state.screen = 'title';
+syncOverlays();
+loadTitleScores();
+refreshContinueButton();
+playMusic('title');
 updateMusicUI();
 if (window.lotSave) {
   if (window.lotSave.onMenuSave) window.lotSave.onMenuSave(() => dispatch('save'));

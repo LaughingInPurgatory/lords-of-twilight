@@ -14,7 +14,6 @@ const path = require('path');
 const fs = require('fs');
 
 const SMOKE = process.env.LOT_SMOKE === '1';   // headless self-test, quits after load
-const TEST_RIFT = process.env.LOT_TEST_RIFT === '1'; // spawn next to the Rift
 const SCORE_FILE = () => path.join(app.getPath('userData'), 'highscores.txt');
 const SAVE_FILE = () => path.join(app.getPath('userData'), 'savegame.json');
 const TOP_N = 10;
@@ -267,8 +266,7 @@ function createWindow() {
       setTimeout(() => quitApp(), 100);
     });
   }
-  const loadOpts = TEST_RIFT ? { query: { testRift: '1' } } : undefined;
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), loadOpts);
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
 app.whenReady().then(() => {
