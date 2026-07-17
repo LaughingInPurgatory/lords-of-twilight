@@ -1,5 +1,9 @@
 # Lords of Twilight
 
+<p align="center">
+  <img src="build/icon.png" alt="Lords of Twilight" width="256" height="256">
+</p>
+
 *A tale of the Third Age of Midnight*
 
 A strategy/adventure game in the spirit of Mike Singleton's **Lords of Midnight** and **Doomdark's Revenge** — first-person exploration, a compass, and a realm to rally. This time the enemy isn't Doomdark's army: it's the Abyss itself, pouring through a Rift torn into the world.
