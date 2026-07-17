@@ -2,7 +2,8 @@
    LORDS OF TWILIGHT — a tale of the Third Age of Midnight
    A spiritual sequel to Mike Singleton's Lords of Midnight / Doomdark's
    Revenge. Panorama exploration, lord recruiting, and the Abyssal Rift.
-   Pure canvas + DOM. No dependencies.
+   Canvas + DOM game logic; optional WebGL play view via window.Lot3D
+   (renderer/world3d.js, loaded by boot.js).
    ========================================================================== */
 'use strict';
 
@@ -1358,10 +1359,10 @@ function renderPlayView(lord, time) {
     window.Lot3D.setVisible(true);
     window.Lot3D.render({
       lord, cam, world, state,
-      dirs: DIRS, /* same table as compass + movement — never diverge from world3d copy */
+      /* dirs: same 8-way table as compass + movement — never diverge from world3d */
+      dirs: DIRS,
       mapW: MAPW, mapH: MAPH,
       env, hour, doom, time,
-      dirs: DIRS,
       corruptKey: world.corruptR,
     });
     g.clearRect(0, 0, W, H);

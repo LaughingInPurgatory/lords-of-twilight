@@ -8,7 +8,7 @@ highscores.txt
 node_modules/
 dist/
 
-# local / editor
+# local / agent guidance (not published with the repo)
 Claude.md
 CLAUDE.md
-.gitignore
+AGENTS.md

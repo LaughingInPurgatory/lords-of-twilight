@@ -1,6 +1,6 @@
 /* Load WebGL view first, then classic game.js (globals for smoke/console).
    Always load game.js even if WebGL/3D init fails — otherwise title/music die. */
-const CACHE = 'fire1';
+const CACHE = 'v231';
 
 async function loadGameScript() {
   await new Promise((resolve, reject) => {

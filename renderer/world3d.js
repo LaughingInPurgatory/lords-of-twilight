@@ -3,7 +3,6 @@
 import * as THREE from 'three';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 
-const TILE = 1;
 const EYE = 1.15;
 const FOG_NEAR = 14;
 const FOG_FAR = 48;
@@ -13,13 +12,8 @@ const H = {
   wasteland: 0.04, keep: 0.06, citadel: 0.08, village: 0.05, tower: 0.06, rift: -1.85,
 };
 
-const COL = {
-  plains: [0.38, 0.50, 0.30], downs: [0.42, 0.52, 0.34], hills: [0.48, 0.50, 0.36],
-  forest: [0.16, 0.34, 0.18], mountains: [0.42, 0.42, 0.48], wasteland: [0.22, 0.16, 0.22],
-  keep: [0.52, 0.48, 0.40], citadel: [0.70, 0.62, 0.42], village: [0.55, 0.48, 0.36],
-  tower: [0.45, 0.52, 0.58], rift: [0.12, 0.04, 0.18],
-  corrupt: [0.28, 0.12, 0.36], snow: [0.85, 0.88, 0.92],
-};
+/* mountain peak snow blend only — tile albedos come from textures + baseColor() */
+const SNOW = [0.85, 0.88, 0.92];
 
 function hash(x, y, i) {
   let s = (x * 374761393 + y * 668265263 + i * 2246822519) >>> 0;
@@ -728,9 +722,9 @@ export function createLot3D(host, width, height) {
           if (py > 1.85 && w[2] > 0.35 && !(tile.corrupt)) {
             const snowAmt = Math.min(1, (py - 1.85) / 0.9) * Math.min(1, w[2] * 1.2);
             c = [
-              c[0] + (COL.snow[0] - c[0]) * snowAmt,
-              c[1] + (COL.snow[1] - c[1]) * snowAmt,
-              c[2] + (COL.snow[2] - c[2]) * snowAmt,
+              c[0] + (SNOW[0] - c[0]) * snowAmt,
+              c[1] + (SNOW[1] - c[1]) * snowAmt,
+              c[2] + (SNOW[2] - c[2]) * snowAmt,
             ];
           }
           col.push(c[0], c[1], c[2]);

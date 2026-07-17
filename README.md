@@ -2,13 +2,20 @@
 
 *A tale of the Third Age of Midnight*
 
-A strategy/adventure game in the spirit of Mike Singleton's **Lords of Midnight** and **Doomdark's Revenge** — first-person panorama exploration, a compass, and a realm to conquer. This time the enemy isn't Doomdark's army: it's the Abyss itself, pouring through a Rift torn into the world.
+A strategy/adventure game in the spirit of Mike Singleton's **Lords of Midnight** and **Doomdark's Revenge** — first-person exploration, a compass, and a realm to rally. This time the enemy isn't Doomdark's army: it's the Abyss itself, pouring through a Rift torn into the world.
 
-It's a **fully self-contained desktop app** built with Electron. It opens in its own window — no browser, no server, nothing else to install. Everything (game, artwork, music) is bundled inside the app; the **only** file it ever writes is your high-score table.
+It's a **fully self-contained desktop app** built with Electron. It opens in its own window — no browser, no server, nothing else to install. Game code, low-poly **WebGL** world view, textures, models, and music are all bundled inside the app.
+
+Outside the bundle the process only ever touches two plain-text files in your per-user data directory:
+
+| File | Purpose |
+|------|---------|
+| `highscores.txt` | Top-10 annals |
+| `savegame.json` | Single-slot quest save (Continue from the title screen) |
 
 ## Play
 
-Grab the installer for your platform — each opens the game in its own window:
+Grab the installer for your platform from the [GitHub Releases](https://github.com/LaughingInPurgatory/lords-of-twilight/releases) page:
 
 | Platform | File |
 |----------|------|
@@ -26,38 +33,53 @@ Grab the installer for your platform — each opens the game in its own window:
 >
 > **Windows:** SmartScreen → **More info → Run anyway**.
 
-Your high scores are saved per-user (e.g. `~/Library/Application Support/Lords of Twilight/highscores.txt` on macOS, `%APPDATA%` on Windows), so they survive reinstalls and updates. That flat text file is the only thing the app writes outside itself — delete it to reset the annals.
+Scores and saves live per-user (e.g. `~/Library/Application Support/Lords of Twilight/` on macOS, `%APPDATA%\Lords of Twilight\` on Windows), so they survive reinstalls and updates.
 
-The four music tracks (title / gameplay / victory / defeat) are bundled in and play automatically; toggle them on/off from the title screen or the in-game HUD, and your choice is remembered.
+The four music tracks (title / gameplay / victory / defeat) are bundled in and play automatically; toggle them from the title screen or the in-game HUD, and your choice is remembered.
+
+### Graphics
+
+From **v2.3** onward the play view is a low-poly **WebGL** world (Three.js): textured terrain, sky, keeps and villages, and an elaborate **Abyssal Rift** setpiece. If WebGL cannot start, the game falls back to the classic 2D canvas panorama automatically.
+
+> **Note:** v2.3.0 release binaries accidentally fell back to 2D because packaging dropped Three's `OBJLoader`. **v2.3.1+** vendors Three under `renderer/vendor/` so the WebGL view ships correctly.
 
 ## Run from source / build it yourself
 
 You need Node and (for `npm install` only) network access — Electron downloads its platform binaries.
 
 ```bash
-npm install            # electron + electron-builder (dev deps only)
+npm install            # electron + electron-builder (+ three as a dev dep for re-vendoring)
 npm start              # run the game in its own window
 npm run icon           # regenerate build/icon.png (optional)
 
-npm run dist:mac       # → dist/*.dmg
+npm run dist:mac       # → dist/*.dmg (arm64 + x64)
 npm run dist:linux     # → dist/*.AppImage
-npm run dist:win       # → dist/*.exe (NSIS installer) + *.zip
+npm run dist:win       # → dist/*.exe (NSIS) + *.zip
+npm run dist           # all platforms configured in package.json
 ```
 
-`npm run dist` builds all three platforms at once. Cross-building the Windows **NSIS installer** from macOS/Linux works because electron-builder ships its own bundled NSIS + Wine; if that ever fails, `npm run dist:win:nowine` produces just the runnable `.exe`-in-a-`.zip`. Builds default to your machine's CPU architecture — add `--x64` or `--arm64` to target the other.
+`npm run dist` builds all three platforms at once. Cross-building the Windows **NSIS installer** from macOS/Linux works because electron-builder ships its own bundled NSIS + Wine; if that ever fails, `npm run dist:win:nowine` produces just the runnable `.exe`-in-a-`.zip`.
 
 ### Project layout
 
 ```
-main.js            Electron main process — window + the high-score file (IPC)
-preload.js         contextBridge exposing the score API to the game
+main.js                 Electron main — window, scores + save IPC, clean quit
+preload.js              contextBridge (lotScores / lotSave / lotApp)
 renderer/
-  index.html       page shell + styles
-  game.js          the entire game (world, renderer, input, logic, screens)
-  *.mp3            bundled music
-scripts/make-icon.js   procedural app icon generator (pure Node)
-build/icon.png     app icon (→ .icns / .ico at build time)
+  index.html            shell, CSS, overlays, HUD, import map
+  boot.js               loads WebGL view, then game.js (2D fallback if needed)
+  world3d.js            low-poly Three.js play view + Rift setpiece
+  game.js               world, input, logic, save, HUD, classic 2D fallback
+  vendor/               vendored three.module + three.core + OBJLoader
+  textures/             terrain / structure / Rift oil textures (CC0)
+  models/               crystal spire OBJ for the Rift
+  *.mp3                 title / bg / win / ded
+scripts/make-icon.js    pure-Node icon PNG
+build/afterPack.js      macOS ad-hoc codesign after pack
+build/icon.png
 ```
+
+Three.js is **vendored** into `renderer/vendor/` so electron-builder always packs it (it strips `node_modules/**/examples/**` by default, which would otherwise drop `OBJLoader`). The `three` npm package is a **devDependency** for re-copying those files when upgrading.
 
 ## How to Play
 
@@ -69,7 +91,7 @@ You are **Lord Athelorn**, Heir of the Moonprince. Your quest: ride out from the
 
 ### The view
 
-The game presents the world the way the original Lords of Midnight did: a first-person panorama looking out across the land in one of eight compass directions (N, NE, E, SE, S, SW, W, NW). Turn to look around; walk forward to travel one tile in the direction you're facing. Distant mountains, forests, keeps, and the baleful glow of the Rift itself all render live as silhouettes on the horizon.
+You look out across the land in one of eight compass directions (N, NE, E, SE, S, SW, W, NW), in the same spirit as Lords of Midnight. Turn to look around; walk forward to travel one tile in the direction you face. Mountains, forests, keeps, and the baleful Rift render live in the low-poly WebGL world (or the classic silhouette panorama if WebGL is unavailable).
 
 Every world is procedurally generated and different each time you start a new game — mountain ranges, forests, keeps, villages, towers, and the Rift itself are all placed fresh, though the game always guarantees a walkable path exists to everything.
 
@@ -81,9 +103,13 @@ The game supports **keyboard, mouse, and gamepad** simultaneously — use whiche
 |---|---|---|---|
 | Turn left / right | `←` `→` or `A` `D` | Click left/right edge of the view | D-pad / left stick |
 | Move forward | `↑` or `W` | Click the center of the view | D-pad / left stick up |
+| Move back | `↓` or `S` | — | D-pad / left stick down |
 | Rest until dawn | `R` | REST button | X |
 | Open/close map | `M` | MAP button | Y |
 | Switch active lord | `Tab` | NEXT LORD button | LB / RB |
+| Pause | `Esc` | — | — |
+| Save quest | `⌘S` / `Ctrl+S` (menu) | Pause / menu | — |
+| Continue quest | title **Continue**, or `⌘O` / `Ctrl+O` | — | — |
 | Confirm / continue | `Enter` or `Space` | Continue button | A |
 | Cancel / close | `Esc` | Close button | B |
 | Toggle music | — | ♪ button (title or HUD) | — |
@@ -98,14 +124,23 @@ As you travel, you'll come across:
 
 You can command multiple lords at once — recruit them, then use **Tab** to switch which one you're actively directing. Each lord has their own position, army, and hours of daylight remaining.
 
+Your quest auto-saves as you play; **Continue** on the title screen resumes the last save.
+
 ### Time & the corruption
 
 Each day gives you a limited number of hours to act — moving, fighting, and visiting places all cost time. When you run out, **rest (R)** to advance to the next dawn. But resting has a cost too: every night, the corruption spreading from the Rift grows a little wider, and new Abyssal warbands may emerge and prowl the land. The clock is ticking — you have a limited number of days before the corruption reaches the Citadel of Dawn itself.
 
 ### Winning & losing
 
-**Victory** — gather a large enough host near the Rift (the game tells you the target once it's been located) and step into it. Your combined armies seal the Rift shut for good.
+**Victory** — gather a large enough host near the Rift (the game tells you the target — **1500** spears) and step into it. Your combined armies seal the Rift shut for good.
 
 **Defeat** — happens if the corruption reaches and swallows the Citadel of Dawn, if every one of your lords falls in battle, or if you run out of days before sealing the Rift.
 
 Either way, you'll get a chance to carve your name — and your score — into the leaderboard, then ride out again into a brand new, freshly generated realm.
+
+## Credits
+
+- Game design inspired by Mike Singleton's *Lords of Midnight*
+- 3D: [three.js](https://threejs.org/) (MIT), vendored under `renderer/vendor/`
+- Textures: [ambientCG](https://ambientcg.com/) (CC0) — see `renderer/textures/CREDITS.txt`
+- Crystal spire model — see `renderer/models/CREDITS.txt`

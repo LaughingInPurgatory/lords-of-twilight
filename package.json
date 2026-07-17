@@ -15,7 +15,6 @@
     "dist:win:nowine": "electron-builder --win zip --x64 --arm64",
     "dist:linux": "electron-builder --linux AppImage --x64 --arm64"
   },
-  "dependencies": {},
   "devDependencies": {
     "electron": "^31.7.6",
     "electron-builder": "^24.13.3",
