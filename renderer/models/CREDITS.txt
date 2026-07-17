@@ -1,0 +1,2 @@
+crystal_spire.obj — procedural twisted crystal spire, CC0 1.0 (public domain).
+Created for Lords of Twilight; free to reuse with or without attribution.

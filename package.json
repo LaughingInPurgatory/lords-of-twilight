@@ -1,7 +1,7 @@
 {
   "name": "lords-of-twilight",
   "productName": "Lords of Twilight",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "A retro-modern strategy/adventure game in the spirit of Lords of Midnight — a fully self-contained Electron desktop app.",
   "author": "LaughingInPurgatory <gkorbey@gmail.com>",
   "license": "MIT",
@@ -14,6 +14,9 @@
     "dist:win": "electron-builder --win nsis zip --x64 --arm64",
     "dist:win:nowine": "electron-builder --win zip --x64 --arm64",
     "dist:linux": "electron-builder --linux AppImage --x64 --arm64"
+  },
+  "dependencies": {
+    "three": "^0.172.0"
   },
   "devDependencies": {
     "electron": "^31.7.6",
@@ -32,11 +35,18 @@
       "main.js",
       "preload.js",
       "renderer/**/*",
-      "package.json"
+      "package.json",
+      "node_modules/three/build/**/*",
+      "node_modules/three/examples/jsm/loaders/OBJLoader.js",
+      "node_modules/three/package.json"
     ],
-    "asarUnpack": ["**/*.mp3"],
+    "asarUnpack": [
+      "**/*.mp3"
+    ],
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "category": "public.app-category.games",
       "icon": "build/icon.png"
     },
@@ -44,7 +54,10 @@
       "title": "${productName}"
     },
     "win": {
-      "target": ["nsis", "zip"],
+      "target": [
+        "nsis",
+        "zip"
+      ],
       "icon": "build/icon.png"
     },
     "nsis": {
@@ -54,7 +67,9 @@
       "shortcutName": "Lords of Twilight"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "build/icon.png",
       "category": "Game",
       "synopsis": "Rally the free lords and seal the Abyssal Rift."

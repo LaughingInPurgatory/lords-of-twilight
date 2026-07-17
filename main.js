@@ -14,6 +14,7 @@ const path = require('path');
 const fs = require('fs');
 
 const SMOKE = process.env.LOT_SMOKE === '1';   // headless self-test, quits after load
+const TEST_RIFT = process.env.LOT_TEST_RIFT === '1'; // spawn next to the Rift
 const SCORE_FILE = () => path.join(app.getPath('userData'), 'highscores.txt');
 const SAVE_FILE = () => path.join(app.getPath('userData'), 'savegame.json');
 const TOP_N = 10;
@@ -96,14 +97,14 @@ function readSaveRaw() {
     const text = fs.readFileSync(SAVE_FILE(), 'utf8');
     if (!text || text.length > MAX_SAVE_BYTES) return null;
     const data = JSON.parse(text);
-    if (!data || data.v !== 1 || !data.world || !data.state) return null;
+    if (!data || (data.v !== 1 && data.v !== 2) || !data.world || !data.state) return null;
     return data;
   } catch {
     return null;
   }
 }
 function writeSave(payload) {
-  if (!payload || typeof payload !== 'object' || payload.v !== 1) {
+  if (!payload || typeof payload !== 'object' || (payload.v !== 1 && payload.v !== 2)) {
     return { ok: false, error: 'invalid save payload' };
   }
   const json = JSON.stringify(payload);
@@ -266,7 +267,8 @@ function createWindow() {
       setTimeout(() => quitApp(), 100);
     });
   }
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const loadOpts = TEST_RIFT ? { query: { testRift: '1' } } : undefined;
+  win.loadFile(path.join(__dirname, 'renderer', 'index.html'), loadOpts);
 }
 
 app.whenReady().then(() => {

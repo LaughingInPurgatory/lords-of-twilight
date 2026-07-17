@@ -35,12 +35,21 @@ function tRand(tx, ty, i) {
 }
 
 /* ------------------------------------------------------------- constants */
+/* Face indices increase when turning LEFT (N→NW→W…). That matches the 3D
+   camera (Three.js +yaw turns left) so compass and view never fight.
+   Right turn decreases the index (N→NE→E…). */
 const DIRS = [
-  { dx: 0, dy: -1 }, { dx: 1, dy: -1 }, { dx: 1, dy: 0 }, { dx: 1, dy: 1 },
-  { dx: 0, dy: 1 },  { dx: -1, dy: 1 }, { dx: -1, dy: 0 }, { dx: -1, dy: -1 },
+  { dx: 0, dy: -1 },  /* 0 N  */
+  { dx: -1, dy: -1 }, /* 1 NW */
+  { dx: -1, dy: 0 },  /* 2 W  */
+  { dx: -1, dy: 1 },  /* 3 SW */
+  { dx: 0, dy: 1 },   /* 4 S  */
+  { dx: 1, dy: 1 },   /* 5 SE */
+  { dx: 1, dy: 0 },   /* 6 E  */
+  { dx: 1, dy: -1 },  /* 7 NE */
 ];
-const DIRNAMES = ['north','north-east','east','south-east','south','south-west','west','north-west'];
-const DIRSHORT = ['N','NE','E','SE','S','SW','W','NW'];
+const DIRNAMES = ['north','north-west','west','south-west','south','south-east','east','north-east'];
+const DIRSHORT = ['N','NW','W','SW','S','SE','E','NE'];
 
 const MAPW = 60, MAPH = 44;
 let RIFT_X = 52, RIFT_Y = 22;       /* re-anchored for every new world */
@@ -53,7 +62,7 @@ let START_X = 6, START_Y = 22;
 const DAY_LIMIT = 100;
 const AP_PER_DAY = 12;
 const HOUR_STEP = 16 / AP_PER_DAY;      /* daylight spans 06:00 → 22:00 */
-const SEAL_STRENGTH = 750;
+const SEAL_STRENGTH = 1500;
 const CORRUPT_PER_NIGHT = 0.50;
 const MAX_ENEMIES = 16;
 const ENEMY_AGGRO = 6;                 /* chebyshev range for night pursuit */
@@ -62,7 +71,7 @@ const RALLY_WAR = { citadel: 10, keep: 8, village: 5 };
 const BATTLE_WIN_LOSS_CAP = 0.50;      /* max fraction lost on a victory */
 const SEAL_FAIL_KEEP = 0.85;           /* strength retained after a failed seal */
 const FALLBACK_SEED = 20260707;     /* proven-good world if generation ever fails */
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 2; /* v2: face indices increase on left turn (N,NW,W…) */
 
 const MOVE_COST = { plains:1, downs:1, keep:1, citadel:1, village:1, tower:1, forest:2, hills:2, wasteland:2, rift:2 };
 const TERRAIN_AHEAD = {
@@ -75,7 +84,7 @@ const TERRAIN_AT = {
 };
 
 /* ------------------------------------------------------------------ DOM */
-const cv = document.getElementById('scene'), g = cv.getContext('2d');
+const cv = document.getElementById('scene'), g = cv.getContext('2d', { alpha: true });
 const W = cv.width, H = cv.height;
 const HORIZON = Math.round(H * 0.42);
 const mapCv = document.getElementById('mapc'), mg = mapCv.getContext('2d');
@@ -353,6 +362,7 @@ function applyCorruption() {
     const d = Math.hypot(x - RIFT_X, y - RIFT_Y);
     world.tiles[y * MAPW + x].corrupt = d <= world.corruptR;
   }
+  if (window.Lot3D) window.Lot3D.refreshCorruption(world, MAPW, MAPH);
 }
 
 function reveal(cx, cy, r) {
@@ -365,15 +375,64 @@ function reveal(cx, cy, r) {
 }
 
 /* ----------------------------------------------------------------- state */
+function syncWorld3D() {
+  if (window.Lot3D) window.Lot3D.rebuild(world, MAPW, MAPH);
+}
+
+/* Dev: ?testRift=1 or LOT_TEST_RIFT=1 — stand next to the Rift, play screen. */
+const TEST_RIFT = /(?:\?|&)testRift=1(?:&|$)/.test(location.search || '');
+
+function faceToward(fromX, fromY, toX, toY) {
+  const dx = Math.sign(toX - fromX), dy = Math.sign(toY - fromY);
+  let best = 0, bestDot = -1e9;
+  for (let f = 0; f < 8; f++) {
+    const d = DIRS[f];
+    const dot = d.dx * dx + d.dy * dy;
+    if (dot > bestDot) { bestDot = dot; best = f; }
+  }
+  return best;
+}
+
+/** Place the active lord on a walkable tile adjacent to the Rift, facing it. */
+function warpBesideRift() {
+  const l = activeLord();
+  if (!l || !world) return;
+  let bx = RIFT_X - 1, by = RIFT_Y, found = false;
+  /* prefer west of rift (approach from citadel side), else any walkable neighbour */
+  const order = [
+    { dx: -1, dy: 0 }, { dx: -1, dy: -1 }, { dx: -1, dy: 1 },
+    { dx: 0, dy: -1 }, { dx: 0, dy: 1 }, { dx: 1, dy: 0 },
+    { dx: 1, dy: -1 }, { dx: 1, dy: 1 },
+  ];
+  for (const d of order) {
+    const nx = RIFT_X + d.dx, ny = RIFT_Y + d.dy;
+    const t = tileAt(nx, ny);
+    if (t && t.t !== 'mountains' && t.t !== 'rift') {
+      bx = nx; by = ny; found = true; break;
+    }
+  }
+  if (!found) { bx = clamp(RIFT_X - 1, 0, MAPW - 1); by = RIFT_Y; }
+  l.x = bx; l.y = by;
+  l.face = faceToward(bx, by, RIFT_X, RIFT_Y);
+  l.ap = AP_PER_DAY;
+  world.riftKnown = true;
+  reveal(bx, by, 6);
+  reveal(RIFT_X, RIFT_Y, 3);
+  reveal(START_X, START_Y, 2);
+  syncWorld3D();
+  updateHUD();
+}
+
 function newGame() {
   genWorld((Math.random() * 4294967296) >>> 0);   /* a new realm every quest */
+  syncWorld3D();
   const battleSeed = (Math.random() * 1e9) | 0;
   state = {
     screen: state ? state.screen : 'title',
     day: 1,
     lords: [{
       name:'Lord Athelorn', title:'Heir of the Moonprince', x:START_X, y:START_Y,
-      face:2, war:130, rid:70, ap:AP_PER_DAY, alive:true, seed:7,
+      face:6, war:130, rid:70, ap:AP_PER_DAY, alive:true, seed:7, /* 6 = east */
     }],
     active: 0,
     modals: [],
@@ -385,6 +444,7 @@ function newGame() {
     rngBattle: mulberry32(battleSeed),
   };
   reveal(START_X, START_Y, 3);
+  if (TEST_RIFT) warpBesideRift();
   updateHUD();
 }
 
@@ -416,10 +476,12 @@ const cam = {
   pan: 0, zoom: 0, bob: 0, roll: 0, drift: 0,
   lastT: 0,
 };
-function kickTurn(dir) {
-  cam.pan = dir * 1.15;
-  cam.roll = dir * 0.055;
-  cam.drift = dir * 0.35;
+function kickTurn(/* dir */) {
+  /* 3D camera is aimed purely from face/DIRS. Any pan/roll juice was
+     making left turns feel like right spins — keep snaps clean. */
+  cam.pan = 0;
+  cam.roll = 0;
+  cam.drift = 0;
 }
 function kickMove(sign) {
   /* +1 forward (zoom in / rush), -1 back (zoom out / fall away) */
@@ -610,7 +672,8 @@ function drawRiftHorizonGlow(lord, time) {
   const dist = Math.hypot(dx, dy);
   if (dist < 1.5 || dist > 24) return;
   const ang = Math.atan2(dy, dx);
-  const faceAng = (lord.face * 45 - 90) * Math.PI / 180;
+  const fd = DIRS[lord.face];
+  const faceAng = Math.atan2(fd.dy, fd.dx);
   let diff = ang - faceAng;
   while (diff > Math.PI) diff -= 2 * Math.PI;
   while (diff < -Math.PI) diff += 2 * Math.PI;
@@ -1222,7 +1285,7 @@ function renderPanorama(lord, time) {
   drawRiftHorizonGlow(lord, time);
   drawGroundPlane(env, lord, time);
 
-  const fwd = DIRS[lord.face], rt = DIRS[(lord.face + 2) % 8];
+  const fwd = DIRS[lord.face], rt = DIRS[(lord.face + 6) % 8]; /* +6 = screen-right under left-increment faces */
   let hordeNear = false;
   /* motion offset so features slide sideways/vertically during steps */
   const slideX = cam.pan * 40;
@@ -1267,17 +1330,31 @@ function renderPanorama(lord, time) {
     }
   }
   g.restore();
+  drawPanoramaHud(lord, hour, hordeNear);
+}
 
-  /* HUD text stays screen-stable */
+/* LoM status lines — drawn on the transparent 2D overlay above WebGL (or 2D view) */
+function drawPanoramaHud(lord, hour, hordeNear) {
+  const fwd = DIRS[lord.face];
   const here = tileAt(lord.x, lord.y);
   const atStr = here.place ? `at the ${here.place.name}` : (TERRAIN_AT[here.t] || 'on the plains');
   let aheadStr = 'the open plains';
-  for (let d = 1; d <= 5; d++) {
-    const tx = lord.x + fwd.dx * d, ty = lord.y + fwd.dy * d;
-    const t = tileAt(tx, ty);
-    if (!t) { aheadStr = 'the mountains'; break; }
-    if (t.place) { aheadStr = `the ${t.place.name}`; break; }
-    if (t.t !== 'plains') { aheadStr = TERRAIN_AHEAD[t.t]; break; }
+  /* scan forward wedge so diagonal keeps still name themselves in the HUD */
+  const faces = [lord.face, (lord.face + 7) % 8, (lord.face + 1) % 8];
+  let foundPlace = false;
+  for (let d = 1; d <= 5 && !foundPlace; d++) {
+    for (const f of faces) {
+      const dir = DIRS[f];
+      const t = tileAt(lord.x + dir.dx * d, lord.y + dir.dy * d);
+      if (t && t.place) { aheadStr = `the ${t.place.name}`; foundPlace = true; break; }
+    }
+  }
+  if (!foundPlace) {
+    for (let d = 1; d <= 5; d++) {
+      const t = tileAt(lord.x + fwd.dx * d, lord.y + fwd.dy * d);
+      if (!t) { aheadStr = 'the mountains'; break; }
+      if (t.t !== 'plains') { aheadStr = TERRAIN_AHEAD[t.t] || aheadStr; break; }
+    }
   }
   g.save();
   g.shadowColor = 'rgba(0,0,0,.9)'; g.shadowBlur = 6;
@@ -1302,6 +1379,41 @@ function renderPanorama(lord, time) {
   g.fillText('facing', W - 50, 54);
   g.textAlign = 'left';
   g.restore();
+}
+
+function hordeNearLord(lord) {
+  const fwd = DIRS[lord.face], rt = DIRS[(lord.face + 6) % 8];
+  for (let d = 1; d <= 2; d++) {
+    for (let k = -1; k <= 1; k++) {
+      const tx = lord.x + fwd.dx * d + rt.dx * k;
+      const ty = lord.y + fwd.dy * d + rt.dy * k;
+      if (world.enemies.some(e => e.x === tx && e.y === ty)) return true;
+    }
+  }
+  return false;
+}
+
+/* Play view: low-poly WebGL when available, else the classic 2D panorama. */
+function renderPlayView(lord, time) {
+  const hour = 6 + (AP_PER_DAY - lord.ap) * HOUR_STEP;
+  const doom = world.corruptR / 48;
+  const env = envColors(hour, doom);
+  if (window.Lot3D) {
+    tickCam(time);
+    window.Lot3D.setVisible(true);
+    window.Lot3D.render({
+      lord, cam, world, state,
+      dirs: DIRS, /* same table as compass + movement — never diverge from world3d copy */
+      mapW: MAPW, mapH: MAPH,
+      env, hour, doom, time,
+      dirs: DIRS,
+      corruptKey: world.corruptR,
+    });
+    g.clearRect(0, 0, W, H);
+    drawPanoramaHud(lord, hour, hordeNearLord(lord));
+  } else {
+    renderPanorama(lord, time);
+  }
 }
 
 /* ----------------------------- title scene ------------------------------ */
@@ -1609,23 +1721,61 @@ function closeModal() {
 const modalOpen = () => state.modals.length > 0;
 
 /* ================================================================ ACTIONS */
-function turn(dir) {
+/* Face 0=N,1=NW,2=W… — left increases face, right decreases (matches 3D camera). */
+function turnLeft() {
   const l = activeLord();
   if (!l) return;
-  l.face = (l.face + (dir > 0 ? 1 : 7)) % 8;
-  kickTurn(dir > 0 ? 1 : -1);
+  l.face = (l.face + 1) % 8;
+  kickTurn(1);   /* pan juice same sign as face step */
 }
+function turnRight() {
+  const l = activeLord();
+  if (!l) return;
+  l.face = (l.face + 7) % 8;
+  kickTurn(-1);
+}
+/* Resolve step. Forward: if any place is on an adjacent tile in the front
+   half-plane, step onto it (keeps were nearly impossible to "pixel-align" in 8-way 3D).
+   Otherwise strict facing / opposite for back. */
+function resolveStepTarget(l, sign) {
+  if (sign > 0 && world.places && world.places.length) {
+    const fd = DIRS[l.face];
+    let magnet = null;
+    for (const p of world.places) {
+      const dx = p.x - l.x, dy = p.y - l.y;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== 1) continue;
+      /* must be in front (or front-diagonal), not beside/behind */
+      const forwardness = dx * fd.dx + dy * fd.dy;
+      if (forwardness <= 0) continue;
+      const t = tileAt(p.x, p.y);
+      if (!t || t.t === 'mountains') continue;
+      let score = 400 + forwardness * 40;
+      if (dx === fd.dx && dy === fd.dy) score += 80; /* dead ahead */
+      if (p.lord && !p.recruited) score += 120;
+      else if (!p.visited) score += 60;
+      if (!magnet || score > magnet.score) magnet = { nx: p.x, ny: p.y, t, score };
+    }
+    if (magnet) return magnet;
+  }
+
+  const f = sign > 0 ? l.face : (l.face + 4) % 8;
+  const d = DIRS[f];
+  const nx = l.x + d.dx, ny = l.y + d.dy;
+  const t = tileAt(nx, ny);
+  if (!t || t.t === 'mountains') return null;
+  return { nx, ny, t, score: 0 };
+}
+
 function tryStep(sign) {
   /* sign +1 = forward (facing), -1 = back (opposite) */
   const l = activeLord();
   if (!l || !l.alive) return;
-  const dir = DIRS[sign > 0 ? l.face : (l.face + 4) % 8];
-  const nx = l.x + dir.dx, ny = l.y + dir.dy;
-  const t = tileAt(nx, ny);
-  if (!t || t.t === 'mountains') {
+  const dest = resolveStepTarget(l, sign);
+  if (!dest) {
     showModal(`<h3>No Way Through</h3>The mountains bar your path. You must find another way.`);
     return;
   }
+  const { nx, ny, t } = dest;
   let cost = MOVE_COST[t.t] || 1;
   if (t.corrupt) cost += 1;
   if (l.ap < cost) {
@@ -1969,7 +2119,8 @@ async function fetchSaveData() {
 }
 
 function applySaveData(data) {
-  if (!data || data.v !== SAVE_VERSION || !data.world || !data.state || !data.anchors) return false;
+  /* v1 used clockwise faces (N,NE,E…); v2 uses left-increment (N,NW,W…) */
+  if (!data || (data.v !== 1 && data.v !== 2) || !data.world || !data.state || !data.anchors) return false;
   const a = data.anchors;
   START_X = a.START_X | 0; START_Y = a.START_Y | 0;
   RIFT_X = a.RIFT_X | 0; RIFT_Y = a.RIFT_Y | 0;
@@ -2020,15 +2171,20 @@ function applySaveData(data) {
     riftKnown: !!w.riftKnown,
   };
   applyCorruption();
+  syncWorld3D();
 
   const st = data.state;
   const battleSeed = (st.battleSeed | 0) || 1;
+  const faceIn = (f) => {
+    f = ((f | 0) % 8 + 8) % 8;
+    return data.v === 1 ? (8 - f) % 8 : f; /* mirror old clockwise faces into v2 */
+  };
   const lords = (st.lords || []).map(l => ({
     name: String(l.name || 'Lord').slice(0, 32),
     title: String(l.title || '').slice(0, 48),
     x: clamp(l.x | 0, 0, MAPW - 1),
     y: clamp(l.y | 0, 0, MAPH - 1),
-    face: ((l.face | 0) % 8 + 8) % 8,
+    face: faceIn(l.face),
     war: Math.max(0, l.war | 0),
     rid: Math.max(0, l.rid | 0),
     ap: clamp(l.ap | 0, 0, AP_PER_DAY),
@@ -2176,7 +2332,7 @@ async function startGame() {
     `<i>"Ride east, Athelorn. Rally every lord who yet stands free — Ithrilan foretold that only a host of ` +
     `<b>${SEAL_STRENGTH} spears</b>, gathered at the very brink, can seal the Abyssal Rift. ` +
     `You have <b>${DAY_LIMIT} days</b> before the corruption swallows the Citadel of Dawn."</i><br>` +
-    `<small style="color:#9d95c0">Turn with ←/→, ride with ↑, rest at night with R, map with M, pause with Esc. The quest auto-saves.</small>`);
+    `<small style="color:#9d95c0">WASD or arrows to turn and ride, R to rest, M for map, Esc to pause (save from the pause menu). The quest auto-saves.</small>`);
   updateHUD();
   autoSave();
   refreshContinueButton();
@@ -2286,8 +2442,8 @@ function dispatch(act) {
   if (mapUp) { if (act === 'cancel') $('ovMap').classList.add('hidden'); return; }
   if (act === 'cancel') { openPause(); return; }   /* Esc / B opens the pause menu */
   switch (act) {
-    case 'turnLeft':  turn(-1); updateHUD(); break;
-    case 'turnRight': turn(1);  updateHUD(); break;
+    case 'turnLeft':  turnLeft();  updateHUD(); break;
+    case 'turnRight': turnRight(); updateHUD(); break;
     case 'forward':   tryForward(); break;
     case 'back':      tryBackward(); break;
     case 'rest':      doRest(); break;
@@ -2309,13 +2465,13 @@ cv.addEventListener('click', e => {
 });
 
 const KEYMAP = {
+  /* WASD + arrows: turn / move (save is pause-menu only) */
   ArrowLeft:'turnLeft', a:'turnLeft', ArrowRight:'turnRight', d:'turnRight',
-  ArrowUp:'forward', w:'forward', ArrowDown:'back', x:'back',
+  ArrowUp:'forward', w:'forward', ArrowDown:'back', s:'back',
   r:'rest', m:'toggleMap', Tab:'nextLord', n:'nextLord',
   Enter:'confirm', ' ':'confirm', Escape:'cancel', f:'forward',
   u:'toggleMusic',                          /* ♪ music on/off */
   q:'prevLord',                             /* previous lord (LB / Q) */
-  s:'save',                                 /* save quest */
 };
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT') {
@@ -2383,6 +2539,10 @@ function shutdownRenderer() {
   rendererAlive = false;
   stopMusic();
   if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+  if (window.Lot3D) {
+    try { window.Lot3D.dispose(); } catch (_) { /* ignore */ }
+    window.Lot3D = null;
+  }
 }
 window.addEventListener('pagehide', shutdownRenderer);
 window.addEventListener('beforeunload', shutdownRenderer);
@@ -2391,12 +2551,15 @@ function frame(ts) {
   if (!rendererAlive) return;
   const time = ts / 1000;
   pollGamepad();
-  if (state.screen === 'title') renderTitle(time);
-  else if (state.screen === 'play') {
+  if (state.screen === 'title') {
+    if (window.Lot3D) window.Lot3D.setVisible(false);
+    renderTitle(time);
+  } else if (state.screen === 'play') {
     const lord = activeLord();
-    if (lord) renderPanorama(lord, time);
+    if (lord) renderPlayView(lord, time);
     if (!$('ovMap').classList.contains('hidden')) renderMap();
   } else if (state.screen === 'end') {
+    if (window.Lot3D) window.Lot3D.setVisible(false);
     if (state.outcome === 'victory') renderVictory(time);
     else renderGameOver(time);
   }
@@ -2405,11 +2568,18 @@ function frame(ts) {
 
 /* --------------------------------- boot ---------------------------------- */
 newGame();
-state.screen = 'title';
-syncOverlays();
-loadTitleScores();
-refreshContinueButton();
-playMusic('title');
+if (TEST_RIFT) {
+  state.screen = 'play';
+  syncOverlays();
+  playMusic('play');
+  console.log('LOT_TEST_RIFT: lord at', activeLord().x, activeLord().y, 'rift', RIFT_X, RIFT_Y);
+} else {
+  state.screen = 'title';
+  syncOverlays();
+  loadTitleScores();
+  refreshContinueButton();
+  playMusic('title');
+}
 updateMusicUI();
 if (window.lotSave) {
   if (window.lotSave.onMenuSave) window.lotSave.onMenuSave(() => dispatch('save'));

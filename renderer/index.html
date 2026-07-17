@@ -20,7 +20,15 @@
     background:#0a0a12;
   }
   #stage { position:relative; }
-  #scene { display:block; width:100%; height:auto; cursor:pointer; }
+  #view3d {
+    position:absolute; inset:0; z-index:0; display:none; overflow:hidden;
+    background:#0b0a12;
+  }
+  #view3d canvas { display:block; width:100% !important; height:auto !important; }
+  #scene {
+    position:relative; z-index:1; display:block; width:100%; height:auto;
+    cursor:pointer; background:transparent;
+  }
   /* subtle retro scanlines + vignette */
   #scan {
     position:absolute; inset:0; pointer-events:none;
@@ -152,6 +160,7 @@
 <body>
   <div id="frame">
     <div id="stage">
+      <div id="view3d" aria-hidden="true"></div>
       <canvas id="scene" width="960" height="540"></canvas>
       <div id="scan"></div>
 
@@ -183,7 +192,7 @@
           <div id="pauseScores"></div>
           <div class="pauseBtns">
             <button class="btn big" data-act="resume">Continue &nbsp;(Esc)</button>
-            <button class="btn" data-act="save">Save Quest &nbsp;(S)</button>
+            <button class="btn" data-act="save">Save Quest</button>
             <button class="btn" data-act="restart">Restart Quest</button>
             <button class="btn" data-act="toTitle">Title Screen</button>
             <button class="btn" id="quitBtn" data-act="quit">Quit to Desktop</button>
@@ -220,7 +229,7 @@
         <div id="continueHint" class="hidden"></div>
         <button class="btn" data-act="toggleMusic" id="musicBtnTitle" style="margin-top:6px;font-size:13px;padding:6px 16px">♪ Music: On</button>
         <div class="legend">
-          <div><b>KEYBOARD</b>&larr;/&rarr; or A/D turn<br>&uarr;/&darr; or W/X move<br>R rest &nbsp;M map &nbsp;Tab/Q lords<br>S save &nbsp;U music &nbsp;Esc pause</div>
+          <div><b>KEYBOARD</b>WASD or arrows: turn + move<br>R rest &nbsp;M map &nbsp;Tab/Q lords<br>U music &nbsp;Esc pause (save from menu)</div>
           <div><b>MOUSE</b>click sides of view: turn<br>click centre: forward<br>use the buttons below</div>
           <div><b>GAMEPAD</b>d-pad/stick: turn + move<br>A confirm &nbsp;B/Start pause &nbsp;Y map<br>X rest &nbsp;LB/RB switch lord</div>
         </div>
@@ -248,6 +257,15 @@
       <div id="hudRight"></div>
     </div>
   </div>
-<script src="game.js"></script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "../node_modules/three/build/three.module.min.js",
+    "three/addons/": "../node_modules/three/examples/jsm/",
+    "three/examples/jsm/": "../node_modules/three/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="boot.js"></script>
 </body>
 </html>
