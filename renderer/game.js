@@ -2265,13 +2265,21 @@ async function clearPersistedSave() {
   } catch { /* ignore */ }
 }
 
+function isCurrentSave(data) {
+  return !!(data && data.v === SAVE_VERSION && data.world && data.state && data.anchors);
+}
+
 async function fetchSaveMeta() {
   try {
     if (window.lotSave && window.lotSave.meta) return await window.lotSave.meta();
     const raw = localStorage.getItem('lot_save');
     if (!raw) return { exists: false };
     const data = JSON.parse(raw);
-    if (!data || data.v !== SAVE_VERSION) return { exists: false };
+    /* drop pre–map-size saves from localStorage fallback */
+    if (!isCurrentSave(data)) {
+      try { localStorage.removeItem('lot_save'); } catch { /* ignore */ }
+      return { exists: false };
+    }
     return {
       exists: true,
       savedAt: data.savedAt || null,
@@ -2286,16 +2294,23 @@ async function fetchSaveData() {
   try {
     if (window.lotSave && window.lotSave.get) {
       const res = await window.lotSave.get();
-      return res && res.ok ? res.data : null;
+      const data = res && res.ok ? res.data : null;
+      return isCurrentSave(data) ? data : null;
     }
     const raw = localStorage.getItem('lot_save');
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!isCurrentSave(data)) {
+      try { localStorage.removeItem('lot_save'); } catch { /* ignore */ }
+      return null;
+    }
+    return data;
   } catch { return null; }
 }
 
 function applySaveData(data) {
-  /* v1 used clockwise faces (N,NE,E…); v2 uses left-increment (N,NW,W…) */
-  if (!data || (data.v !== 1 && data.v !== 2) || !data.world || !data.state || !data.anchors) return false;
+  /* Current schema only (v3 = 120×88). Older slots are never loaded. */
+  if (!isCurrentSave(data)) return false;
   const a = data.anchors;
   START_X = a.START_X | 0; START_Y = a.START_Y | 0;
   RIFT_X = a.RIFT_X | 0; RIFT_Y = a.RIFT_Y | 0;
@@ -2350,10 +2365,7 @@ function applySaveData(data) {
 
   const st = data.state;
   const battleSeed = (st.battleSeed | 0) || 1;
-  const faceIn = (f) => {
-    f = ((f | 0) % 8 + 8) % 8;
-    return data.v === 1 ? (8 - f) % 8 : f; /* mirror old clockwise faces into v2 */
-  };
+  const faceIn = (f) => ((f | 0) % 8 + 8) % 8;
   const lords = (st.lords || []).map(l => ({
     name: String(l.name || 'Lord').slice(0, 32),
     title: String(l.title || '').slice(0, 48),

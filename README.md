@@ -47,6 +47,12 @@ From **v2.3** onward the play view is a low-poly **WebGL** world (Three.js): tex
 
 > **Note:** v2.3.0 release binaries accidentally fell back to 2D because packaging dropped Three's `OBJLoader`. **v2.3.1+** vendors Three under `renderer/vendor/` so the WebGL view ships correctly.
 
+### What’s new in 2.4.1
+
+- Fix Continue quest (v3 saves load correctly; only current-schema saves are offered)
+- Default window **1600×900**; size (and maximize) remembered across launches
+- **Alt+Enter** / **Option+Enter** toggles fullscreen
+
 ### What’s new in 2.4.0
 
 - New application icon (knight vs abyssal champion)
@@ -128,6 +134,7 @@ The game supports **keyboard, mouse, and gamepad** simultaneously — use whiche
 | Continue quest | — | title **Continue Quest** | — |
 | Confirm / continue | `Enter` or `Space` | Continue button | **A** |
 | Toggle music | `U` | Settings → Music | — |
+| Toggle fullscreen | `Alt`+`Enter` (macOS: `Option`+`Enter`) | — | — |
 | Annals (intro) | — | **Annals** button | — |
 
 ### Exploring & recruiting

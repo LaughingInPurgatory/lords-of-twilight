@@ -3,9 +3,8 @@
    --------------------------------------------------------------------------
    No HTTP server. The game (renderer/index.html + game.js + bundled .mp3s)
    is loaded straight into the window over file://. Outside the app bundle
-   the process only ever touches two plain-text files in the per-user data
-   dir: highscores.txt and savegame.json (via the contextBridge APIs in
-   preload.js).
+   the process only ever touches plain-text files in the per-user data
+   dir: highscores.txt, savegame.json, window.json (size prefs).
    ========================================================================== */
 'use strict';
 
@@ -18,13 +17,78 @@ const QUIT_TEST = process.env.LOT_QUIT_TEST === '1'; // boot then quitApp — pr
 const IS_MAC = process.platform === 'darwin';
 const SCORE_FILE = () => path.join(app.getPath('userData'), 'highscores.txt');
 const SAVE_FILE = () => path.join(app.getPath('userData'), 'savegame.json');
+const WINDOW_FILE = () => path.join(app.getPath('userData'), 'window.json');
 const TOP_N = 10;
 const MAX_SAVE_BYTES = 2 * 1024 * 1024; // 2 MiB hard cap
-/* save schema: v3 = 120×88 map (current). Older payloads are rejected. */
-const SAVE_OK = (v) => v === 1 || v === 2 || v === 3;
+const DEFAULT_WIDTH = 1600;
+const DEFAULT_HEIGHT = 900;
+const MIN_WIDTH = 820;
+const MIN_HEIGHT = 600;
+/* Only the current map-size schema is accepted; older slots are ignored/wiped. */
+const SAVE_SCHEMA = 3; /* 120×88 — keep in sync with SAVE_VERSION in game.js */
+const SAVE_OK = (v) => v === SAVE_SCHEMA;
 let win = null;
 let quitting = false;
 let hardExitTimer = null;
+let windowSaveTimer = null;
+
+/* ---------------------- window size prefs (userData/window.json) -------- */
+function loadWindowPrefs() {
+  try {
+    const j = JSON.parse(fs.readFileSync(WINDOW_FILE(), 'utf8'));
+    let width = Math.floor(Number(j && j.width));
+    let height = Math.floor(Number(j && j.height));
+    if (!Number.isFinite(width) || width < MIN_WIDTH) width = DEFAULT_WIDTH;
+    if (!Number.isFinite(height) || height < MIN_HEIGHT) height = DEFAULT_HEIGHT;
+    width = Math.min(width, 7680);
+    height = Math.min(height, 4320);
+    return { width, height, maximized: !!(j && j.maximized) };
+  } catch {
+    return { width: DEFAULT_WIDTH, height: DEFAULT_HEIGHT, maximized: false };
+  }
+}
+
+function writeWindowPrefs(prefs) {
+  try {
+    fs.writeFileSync(WINDOW_FILE(), JSON.stringify({
+      width: prefs.width | 0,
+      height: prefs.height | 0,
+      maximized: !!prefs.maximized,
+    }), 'utf8');
+  } catch { /* ignore */ }
+}
+
+function persistWindowState() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    /* never write the fullscreen display size as the window size */
+    if (win.isFullScreen()) return;
+    const maximized = win.isMaximized();
+    const b = (maximized && typeof win.getNormalBounds === 'function')
+      ? win.getNormalBounds()
+      : win.getBounds();
+    let width = Math.floor(b.width);
+    let height = Math.floor(b.height);
+    if (!Number.isFinite(width) || width < MIN_WIDTH) width = DEFAULT_WIDTH;
+    if (!Number.isFinite(height) || height < MIN_HEIGHT) height = DEFAULT_HEIGHT;
+    writeWindowPrefs({ width, height, maximized });
+  } catch { /* ignore */ }
+}
+
+function toggleFullScreen() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.setFullScreen(!win.isFullScreen());
+  } catch { /* ignore */ }
+}
+
+function schedulePersistWindowState() {
+  if (windowSaveTimer != null) clearTimeout(windowSaveTimer);
+  windowSaveTimer = setTimeout(() => {
+    windowSaveTimer = null;
+    persistWindowState();
+  }, 300);
+}
 
 /* Always tear the process down — macOS must not keep a dock-only zombie. */
 function scheduleHardExit(ms) {
@@ -65,6 +129,8 @@ function quitApp() {
     return;
   }
   quitting = true;
+  /* remember size before teardown so the next launch matches the user */
+  try { persistWindowState(); } catch { /* ignore */ }
   /* macOS: hide dock icon immediately so a slow hard-exit doesn't look "stuck" */
   if (IS_MAC) {
     try { if (app.dock) app.dock.hide(); } catch { /* ignore */ }
@@ -129,11 +195,19 @@ function addScore(body) {
 /* --------------------------- save / resume ------------------------------
    One quest slot. The renderer owns the schema; main only stores JSON and
    returns a lightweight meta view for the title-screen Continue button.  */
+function wipeSaveFile() {
+  try { fs.unlinkSync(SAVE_FILE()); } catch { /* no slot */ }
+}
 function readSaveRaw() {
   try {
     const text = fs.readFileSync(SAVE_FILE(), 'utf8');
     if (!text || text.length > MAX_SAVE_BYTES) return null;
     const data = JSON.parse(text);
+    /* pre–map-size-change saves (v1/v2) — drop silently, no Continue */
+    if (data && data.v != null && !SAVE_OK(data.v)) {
+      wipeSaveFile();
+      return null;
+    }
     if (!data || !SAVE_OK(data.v) || !data.world || !data.state) return null;
     return data;
   } catch {
@@ -150,7 +224,7 @@ function writeSave(payload) {
   return { ok: true, savedAt: payload.savedAt || null };
 }
 function clearSave() {
-  try { fs.unlinkSync(SAVE_FILE()); } catch { /* no slot */ }
+  wipeSaveFile();
   return { ok: true };
 }
 function saveMeta() {
@@ -219,11 +293,12 @@ function buildMenu() {
 }
 
 function createWindow() {
+  const prefs = loadWindowPrefs();
   win = new BrowserWindow({
-    width: 1040,
-    height: 764,
-    minWidth: 820,
-    minHeight: 600,
+    width: prefs.width,
+    height: prefs.height,
+    minWidth: MIN_WIDTH,
+    minHeight: MIN_HEIGHT,
     backgroundColor: '#0b0a12',
     show: false,
     title: 'Lords of Twilight',
@@ -235,7 +310,26 @@ function createWindow() {
       sandbox: true,
     },
   });
-  win.once('ready-to-show', () => { if (!SMOKE && !QUIT_TEST) win.show(); });
+  win.once('ready-to-show', () => {
+    if (SMOKE || QUIT_TEST) return;
+    if (prefs.maximized) {
+      try { win.maximize(); } catch { /* ignore */ }
+    }
+    win.show();
+  });
+  /* debounced write while the player drags the edges; flush again on quit */
+  win.on('resize', schedulePersistWindowState);
+  win.on('maximize', schedulePersistWindowState);
+  win.on('unmaximize', schedulePersistWindowState);
+  /* Alt+Enter (Option+Enter on macOS) toggles exclusive fullscreen */
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown') return;
+    if (input.alt && !input.control && !input.meta
+        && (input.key === 'Enter' || input.key === 'Return')) {
+      event.preventDefault();
+      toggleFullScreen();
+    }
+  });
   win.on('close', (e) => {
     if (quitting) return;
     /* red traffic-light / Cmd+W: full quit for a single-window game (incl. macOS) */
