@@ -14,27 +14,65 @@ const path = require('path');
 const fs = require('fs');
 
 const SMOKE = process.env.LOT_SMOKE === '1';   // headless self-test, quits after load
+const QUIT_TEST = process.env.LOT_QUIT_TEST === '1'; // boot then quitApp — proves clean exit
+const IS_MAC = process.platform === 'darwin';
 const SCORE_FILE = () => path.join(app.getPath('userData'), 'highscores.txt');
 const SAVE_FILE = () => path.join(app.getPath('userData'), 'savegame.json');
 const TOP_N = 10;
 const MAX_SAVE_BYTES = 2 * 1024 * 1024; // 2 MiB hard cap
+/* save schema: v3 = 120×88 map (current). Older payloads are rejected. */
+const SAVE_OK = (v) => v === 1 || v === 2 || v === 3;
 let win = null;
 let quitting = false;
+let hardExitTimer = null;
+
+/* Always tear the process down — macOS must not keep a dock-only zombie. */
+function scheduleHardExit(ms) {
+  if (hardExitTimer != null) return;
+  hardExitTimer = setTimeout(() => {
+    try { app.exit(0); } catch { /* fall through */ }
+    try { process.exit(0); } catch { /* ignore */ }
+  }, ms == null ? 350 : ms);
+}
+
+function destroyAllWindows() {
+  try {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        w.removeAllListeners('close');
+        w.removeAllListeners('closed');
+        if (!w.isDestroyed()) {
+          try {
+            /* stop renderer work before destroy (WebGL / Audio can hang quit) */
+            if (!w.webContents.isDestroyed()) {
+              w.webContents.removeAllListeners();
+              try { w.webContents.closeDevTools(); } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+          w.destroy();
+        }
+      } catch { /* already gone */ }
+    }
+  } catch { /* ignore */ }
+  win = null;
+}
 
 /* force a full process exit — games shouldn't linger in the dock after Quit */
 function quitApp() {
-  if (quitting) return;
+  if (quitting) {
+    /* re-entry (e.g. window-all-closed after before-quit) — still force exit */
+    scheduleHardExit(200);
+    return;
+  }
   quitting = true;
-  try {
-    if (win && !win.isDestroyed()) {
-      win.removeAllListeners('close');
-      win.destroy();
-    }
-  } catch { /* already gone */ }
-  win = null;
-  app.quit();
-  /* hard stop if something (audio/ipc) keeps the event loop alive */
-  setTimeout(() => { try { app.exit(0); } catch { process.exit(0); } }, 400);
+  /* macOS: hide dock icon immediately so a slow hard-exit doesn't look "stuck" */
+  if (IS_MAC) {
+    try { if (app.dock) app.dock.hide(); } catch { /* ignore */ }
+  }
+  destroyAllWindows();
+  try { app.quit(); } catch { /* ignore */ }
+  /* hard stop if audio/WebGL/IPC keeps the event loop alive (common on macOS) */
+  scheduleHardExit(350);
 }
 
 /* ---------------------- plain-text high-score DB ------------------------
@@ -96,14 +134,14 @@ function readSaveRaw() {
     const text = fs.readFileSync(SAVE_FILE(), 'utf8');
     if (!text || text.length > MAX_SAVE_BYTES) return null;
     const data = JSON.parse(text);
-    if (!data || (data.v !== 1 && data.v !== 2) || !data.world || !data.state) return null;
+    if (!data || !SAVE_OK(data.v) || !data.world || !data.state) return null;
     return data;
   } catch {
     return null;
   }
 }
 function writeSave(payload) {
-  if (!payload || typeof payload !== 'object' || (payload.v !== 1 && payload.v !== 2)) {
+  if (!payload || typeof payload !== 'object' || !SAVE_OK(payload.v)) {
     return { ok: false, error: 'invalid save payload' };
   }
   const json = JSON.stringify(payload);
@@ -154,41 +192,30 @@ ipcMain.handle('app:quit', () => { quitApp(); return { ok: true }; });
 
 /* ------------------------------- window --------------------------------- */
 function buildMenu() {
-  const isMac = process.platform === 'darwin';
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    ...(isMac ? [{ role: 'appMenu' }] : []),
-    {
-      label: 'Game',
-      submenu: [
-        {
-          label: 'Save Quest',
-          accelerator: 'CmdOrCtrl+S',
-          click: () => win && win.webContents.send('menu:save'),
-        },
-        {
-          label: 'Continue Quest',
-          accelerator: 'CmdOrCtrl+O',
-          click: () => win && win.webContents.send('menu:continue'),
-        },
-        { type: 'separator' },
-        { label: 'New Realm (reload)', accelerator: 'CmdOrCtrl+R', click: () => win && win.reload() },
-        { type: 'separator' },
-        isMac ? { role: 'close' } : { role: 'quit' },
-      ],
-    },
-    {
-      label: 'View',
-      submenu: [
-        { role: 'togglefullscreen' },
-        { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
-        { type: 'separator' }, { role: 'toggleDevTools' },
-      ],
-    },
-    {
-      label: 'Help',
-      submenu: [{ label: 'Project on GitHub', click: () => shell.openExternal('https://github.com/LaughingInPurgatory/lords-of-twilight') }],
-    },
-  ]));
+  /*
+   * In-game pause owns Save / Continue — no full Edit/View menu.
+   * On macOS we still need a minimal app menu so Cmd+Q / dock Quit / About
+   * work natively; without it, Quit accelerators can vanish and the process
+   * is easier to leave half-alive.
+   */
+  if (IS_MAC) {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      {
+        label: app.name || 'Lords of Twilight',
+        submenu: [
+          { role: 'about' },
+          { type: 'separator' },
+          {
+            label: 'Quit',
+            accelerator: 'Command+Q',
+            click: () => { quitApp(); },
+          },
+        ],
+      },
+    ]));
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 }
 
 function createWindow() {
@@ -200,7 +227,7 @@ function createWindow() {
     backgroundColor: '#0b0a12',
     show: false,
     title: 'Lords of Twilight',
-    icon: process.platform === 'linux' ? path.join(__dirname, 'build', 'icon.png') : undefined,
+    icon: path.join(__dirname, 'build', 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -208,23 +235,68 @@ function createWindow() {
       sandbox: true,
     },
   });
-  win.once('ready-to-show', () => { if (!SMOKE) win.show(); });
+  win.once('ready-to-show', () => { if (!SMOKE && !QUIT_TEST) win.show(); });
   win.on('close', (e) => {
     if (quitting) return;
-    /* red traffic-light / Cmd+W: full quit for a single-window game */
+    /* red traffic-light / Cmd+W: full quit for a single-window game (incl. macOS) */
     e.preventDefault();
     quitApp();
   });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => {
+    win = null;
+    /* belt-and-braces: if something closed the window without quitApp */
+    if (!quitting) quitApp();
+  });
   win.webContents.setWindowOpenHandler(({ url }) => {
-    // only allow http(s) links out of the app (Help → GitHub, etc.)
+    // only allow http(s) links out of the app
     if (/^https?:\/\//i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
 
-  if (SMOKE) {
+  if (SMOKE || QUIT_TEST) {
     win.webContents.once('did-finish-load', async () => {
+      if (QUIT_TEST && !SMOKE) {
+        try {
+          await win.webContents.executeJavaScript(`(async () => {
+            for (let i = 0; i < 80; i++) {
+              if (typeof genWorld === 'function') return true;
+              await new Promise(r => setTimeout(r, 50));
+            }
+            return false;
+          })()`);
+          console.log('LOT_QUIT_TEST_OK');
+          /* same path as pause → Quit: renderer cleanup + lotApp.quit → quitApp */
+          try {
+            await win.webContents.executeJavaScript(`
+              (async () => {
+                if (typeof shutdownRenderer === 'function') shutdownRenderer();
+                if (window.lotApp && window.lotApp.quit) await window.lotApp.quit();
+              })()
+            `);
+          } catch {
+            quitApp();
+          }
+          scheduleHardExit(500);
+        } catch (err) {
+          console.error('LOT_QUIT_TEST_FAIL', err && err.message ? err.message : err);
+          quitApp();
+        }
+        return;
+      }
       try {
+        /* boot.js is async — wait for game.js globals before asserting */
+        const ready = await win.webContents.executeJavaScript(`(async () => {
+          for (let i = 0; i < 80; i++) {
+            if (typeof genWorld === 'function' && typeof serializeGame === 'function') return true;
+            await new Promise(r => setTimeout(r, 50));
+          }
+          return false;
+        })()`);
+        if (!ready) {
+          console.error('LOT_SMOKE_FAIL', JSON.stringify({ ok: false, reason: 'boot timeout' }));
+          app.exit(1);
+          return;
+        }
         const report = await win.webContents.executeJavaScript(`(async () => {
           genWorld(20260707);
           const places = world.places.length;
@@ -272,10 +344,33 @@ function createWindow() {
 app.whenReady().then(() => {
   buildMenu();
   createWindow();
+  /* macOS dock click — only recreate if user didn't already quit */
   app.on('activate', () => {
     if (quitting) return;
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 });
-app.on('window-all-closed', () => { quitApp(); });
-app.on('before-quit', () => { quitting = true; });
+
+/* Last window closed → leave the process (do NOT keep alive on macOS). */
+app.on('window-all-closed', () => {
+  if (!quitting) quitApp();
+  else scheduleHardExit(200);
+});
+
+/*
+ * Cmd+Q / dock Quit / app.quit() — do not cancel quit; tear windows down and
+ * schedule a hard exit so WebGL/audio cannot leave a dock-only zombie.
+ * (Previously we preventDefault + re-entered quitApp, which could race.)
+ */
+app.on('before-quit', () => {
+  quitting = true;
+  if (IS_MAC) {
+    try { if (app.dock) app.dock.hide(); } catch { /* ignore */ }
+  }
+  destroyAllWindows();
+  scheduleHardExit(350);
+});
+
+app.on('will-quit', () => {
+  scheduleHardExit(150);
+});

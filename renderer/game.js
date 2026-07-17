@@ -52,27 +52,27 @@ const DIRS = [
 const DIRNAMES = ['north','north-west','west','south-west','south','south-east','east','north-east'];
 const DIRSHORT = ['N','NW','W','SW','S','SE','E','NE'];
 
-const MAPW = 60, MAPH = 44;
-let RIFT_X = 52, RIFT_Y = 22;       /* re-anchored for every new world */
-let START_X = 6, START_Y = 22;
+/* double the classic 60×44 realm — Citadel still west, Rift still far east */
+const MAPW = 120, MAPH = 88;
+let RIFT_X = 104, RIFT_Y = 44;      /* re-anchored for every new world */
+let START_X = 12, START_Y = 44;
 /* ---- balance tunables --------------------------------------------------
-   Aimed at a ~100-day campaign: corruption reaches the Citadel near the
-   final days (dist ~46–50 × 0.50 ≈ day 92–100), seal needs a real host
-   (~half the free lords + night recruits), and night pressure is present
-   without steamrolling a careful player.                                  */
+   Aimed at a ~100-day campaign on the large map: citadel↔rift ~95–105 tiles,
+   corruption radius growth ~1.05/night so the blight reaches Dawn near day
+   90–100. Seal host and night pressure otherwise unchanged.               */
 const DAY_LIMIT = 100;
 const AP_PER_DAY = 12;
 const HOUR_STEP = 16 / AP_PER_DAY;      /* daylight spans 06:00 → 22:00 */
 const SEAL_STRENGTH = 1500;
-const CORRUPT_PER_NIGHT = 0.50;
-const MAX_ENEMIES = 16;
-const ENEMY_AGGRO = 6;                 /* chebyshev range for night pursuit */
+const CORRUPT_PER_NIGHT = 1.05;        /* scaled for ~2× map span vs v2.3 */
+const MAX_ENEMIES = 20;
+const ENEMY_AGGRO = 7;                 /* chebyshev range for night pursuit */
 const ENEMY_SPAWN_EVERY = 4;           /* nights between new warbands */
 const RALLY_WAR = { citadel: 10, keep: 8, village: 5 };
 const BATTLE_WIN_LOSS_CAP = 0.50;      /* max fraction lost on a victory */
 const SEAL_FAIL_KEEP = 0.85;           /* strength retained after a failed seal */
 const FALLBACK_SEED = 20260707;     /* proven-good world if generation ever fails */
-const SAVE_VERSION = 2; /* v2: face indices increase on left turn (N,NW,W…) */
+const SAVE_VERSION = 3; /* v3: map 120×88 (was 60×44 in v2) */
 
 const MOVE_COST = { plains:1, downs:1, keep:1, citadel:1, village:1, tower:1, forest:2, hills:2, wasteland:2, rift:2 };
 const TERRAIN_AHEAD = {
@@ -135,8 +135,8 @@ function setMusic(on) {
   updateMusicUI();
 }
 function updateMusicUI() {
-  const t = $('musicBtnTitle'); if (t) t.textContent = musicOn ? '♪ Music: On' : '♪ Music: Off';
-  const h = $('musicBtnHud'); if (h) h.textContent = musicOn ? '♪ ON' : '♪ OFF';
+  const s = $('musicBtnSettings');
+  if (s) s.textContent = musicOn ? '♪ Music: On' : '♪ Music: Off';
 }
 /* browsers block autoplay until the first interaction — resume then */
 for (const ev of ['pointerdown', 'keydown']) {
@@ -180,10 +180,10 @@ function genWorld(seed) {
 function tryGenWorld(seed) {
   const rnd = mulberry32(seed);
   /* anchors: the Citadel rises in the west, the Rift gapes in the east */
-  START_X = 4 + Math.floor(rnd() * 4);
-  START_Y = 8 + Math.floor(rnd() * (MAPH - 16));
-  RIFT_X = MAPW - 10 + Math.floor(rnd() * 4);
-  RIFT_Y = 9 + Math.floor(rnd() * (MAPH - 18));
+  START_X = 8 + Math.floor(rnd() * 6);
+  START_Y = 14 + Math.floor(rnd() * (MAPH - 28));
+  RIFT_X = MAPW - 16 + Math.floor(rnd() * 6);
+  RIFT_Y = 16 + Math.floor(rnd() * (MAPH - 32));
   const tiles = [];
   for (let i = 0; i < MAPW * MAPH; i++) tiles.push({ t:'plains', place:null, corrupt:false });
   const set = (x, y, t) => { if (inMap(x, y)) tiles[y * MAPW + x].t = t; };
@@ -197,14 +197,14 @@ function tryGenWorld(seed) {
     if (rnd() < 0.45) set(x, MAPH - 2, 'mountains');
   }
 
-  /* interior mountain chains */
-  for (let c = 0; c < 14; c++) {
-    let x = 3 + Math.floor(rnd() * (MAPW - 6));
-    let y = 3 + Math.floor(rnd() * (MAPH - 6));
-    const len = 8 + Math.floor(rnd() * 10);
+  /* interior mountain chains (scaled for the large realm) */
+  for (let c = 0; c < 28; c++) {
+    let x = 4 + Math.floor(rnd() * (MAPW - 8));
+    let y = 4 + Math.floor(rnd() * (MAPH - 8));
+    const len = 12 + Math.floor(rnd() * 16);
     for (let i = 0; i < len; i++) {
-      const nearStart = Math.abs(x - START_X) <= 2 && Math.abs(y - START_Y) <= 2;
-      const nearRift  = Math.abs(x - RIFT_X)  <= 4 && Math.abs(y - RIFT_Y)  <= 4;
+      const nearStart = Math.abs(x - START_X) <= 3 && Math.abs(y - START_Y) <= 3;
+      const nearRift  = Math.abs(x - RIFT_X)  <= 5 && Math.abs(y - RIFT_Y)  <= 5;
       if (!nearStart && !nearRift) set(x, y, 'mountains');
       x += Math.floor(rnd() * 3) - 1; y += Math.floor(rnd() * 3) - 1;
       x = clamp(x, 1, MAPW - 2); y = clamp(y, 1, MAPH - 2);
@@ -221,12 +221,12 @@ function tryGenWorld(seed) {
       }
     }
   };
-  blob('forest', 18, 3); blob('hills', 14, 3); blob('downs', 10, 3);
+  blob('forest', 36, 4); blob('hills', 28, 4); blob('downs', 20, 4);
 
   /* the Rift and its blighted waste */
-  for (let y = RIFT_Y - 4; y <= RIFT_Y + 4; y++) for (let x = RIFT_X - 4; x <= RIFT_X + 4; x++) {
+  for (let y = RIFT_Y - 5; y <= RIFT_Y + 5; y++) for (let x = RIFT_X - 5; x <= RIFT_X + 5; x++) {
     if (inMap(x, y) && x > 0 && x < MAPW - 1 && y > 0 && y < MAPH - 1 &&
-        (x-RIFT_X)*(x-RIFT_X) + (y-RIFT_Y)*(y-RIFT_Y) <= 17) set(x, y, 'wasteland');
+        (x-RIFT_X)*(x-RIFT_X) + (y-RIFT_Y)*(y-RIFT_Y) <= 28) set(x, y, 'wasteland');
   }
   set(RIFT_X, RIFT_Y, 'rift');
 
@@ -235,7 +235,7 @@ function tryGenWorld(seed) {
   let py = START_Y;
   for (let x = START_X; x <= RIFT_X; x++) {
     const t = (x - START_X) / Math.max(1, RIFT_X - START_X);
-    py = clamp(Math.round(lerp(START_Y, RIFT_Y, t) + Math.sin(x * 0.35) * 3 + (rnd() - 0.5) * 2), 2, MAPH - 3);
+    py = clamp(Math.round(lerp(START_Y, RIFT_Y, t) + Math.sin(x * 0.22) * 5 + (rnd() - 0.5) * 3), 2, MAPH - 3);
     for (const yy of [py - 1, py, py + 1]) {
       if (get(x, yy) === 'mountains') set(x, yy, rnd() < 0.4 ? 'hills' : 'plains');
     }
@@ -268,12 +268,12 @@ function tryGenWorld(seed) {
   /* spots keep their distance from one another and shun the blight */
   const placed = [{ x:START_X, y:START_Y }, { x:RIFT_X, y:RIFT_Y }];
   const findSpot = () => {
-    for (let minDist = 5; minDist >= 2; minDist--) {
-      for (let tries = 0; tries < 250; tries++) {
-        const x = 3 + Math.floor(rnd() * (MAPW - 7));
-        const y = 2 + Math.floor(rnd() * (MAPH - 4));
+    for (let minDist = 8; minDist >= 3; minDist--) {
+      for (let tries = 0; tries < 400; tries++) {
+        const x = 4 + Math.floor(rnd() * (MAPW - 9));
+        const y = 3 + Math.floor(rnd() * (MAPH - 6));
         if (get(x, y) === 'rift') continue;
-        if (Math.hypot(x - RIFT_X, y - RIFT_Y) < 7) continue;
+        if (Math.hypot(x - RIFT_X, y - RIFT_Y) < 10) continue;
         if (placed.some(p => Math.max(Math.abs(p.x - x), Math.abs(p.y - y)) < minDist)) continue;
         return { x, y };
       }
@@ -321,14 +321,14 @@ function tryGenWorld(seed) {
     const [x, y] = brink.splice(Math.floor(rnd() * brink.length), 1)[0];
     enemies.push({ x, y, str: 240 + Math.floor(rnd() * 40) });
   }
-  for (let tries = 0; enemies.length < 12 && tries < 400; tries++) {
-    const x = Math.floor(MAPW * 0.45) + Math.floor(rnd() * Math.floor(MAPW * 0.5));
-    const y = 2 + Math.floor(rnd() * (MAPH - 4));
+  for (let tries = 0; enemies.length < 18 && tries < 600; tries++) {
+    const x = Math.floor(MAPW * 0.42) + Math.floor(rnd() * Math.floor(MAPW * 0.52));
+    const y = 3 + Math.floor(rnd() * (MAPH - 6));
     const t = get(x, y);
     if (t === 'mountains' || t === 'rift') continue;
     if (tiles[y * MAPW + x].place) continue;
-    if (Math.max(Math.abs(x - START_X), Math.abs(y - START_Y)) < 14) continue;
-    if (enemies.some(e => Math.max(Math.abs(e.x - x), Math.abs(e.y - y)) < 3)) continue;
+    if (Math.max(Math.abs(x - START_X), Math.abs(y - START_Y)) < 22) continue;
+    if (enemies.some(e => Math.max(Math.abs(e.x - x), Math.abs(e.y - y)) < 4)) continue;
     enemies.push({ x, y, str: 100 + Math.floor(rnd() * 75) });
   }
 
@@ -351,7 +351,7 @@ function tryGenWorld(seed) {
   world = {
     tiles, places, enemies,
     discovered: new Uint8Array(MAPW * MAPH),
-    corruptR: 2.5,
+    corruptR: 3.5,
     riftKnown: false,
   };
   applyCorruption();
@@ -651,13 +651,14 @@ function drawGroundShadow(x, y, s, wMul) {
 
 /* --------------------------- terrain — pseudo-3D ------------------------ */
 function drawMountains(x, y, s, tx, ty, P) {
-  const w = 400 * s, h = (175 + tRand(tx, ty, 1) * 95) * s;
+  /* taller massifs so they read clearly against walkable hills */
+  const w = 400 * s, h = (220 + tRand(tx, ty, 1) * 120) * s;
   drawGroundShadow(x, y, s, 1.5);
   /* back → front peaks: each is a real mountain (steep ridges, lit/shade faces, snow) */
   const peaks = [
-    { ox: -0.28, hw: 0.42, hh: 0.62 + tRand(tx, ty, 4) * 0.12 },
-    { ox: 0.30,  hw: 0.38, hh: 0.70 + tRand(tx, ty, 5) * 0.12 },
-    { ox: -0.02, hw: 0.52, hh: 0.95 + tRand(tx, ty, 6) * 0.08 },
+    { ox: -0.28, hw: 0.42, hh: 0.72 + tRand(tx, ty, 4) * 0.14 },
+    { ox: 0.30,  hw: 0.38, hh: 0.82 + tRand(tx, ty, 5) * 0.14 },
+    { ox: -0.02, hw: 0.52, hh: 1.08 + tRand(tx, ty, 6) * 0.1 },
   ];
   for (let pi = 0; pi < peaks.length; pi++) {
     const p = peaks[pi];
@@ -1222,7 +1223,7 @@ function drawFeature(tile, x, y, s, tx, ty, P, time, night) {
 function renderPanorama(lord, time) {
   tickCam(time);
   const hour = 6 + (AP_PER_DAY - lord.ap) * HOUR_STEP;
-  const doom = world.corruptR / 48;
+  const doom = world.corruptR / Math.max(48, MAPW * 0.8);
   const env = envColors(hour, doom);
   const night = hour >= 20 || hour < 6;
 
@@ -1313,25 +1314,25 @@ function drawPanoramaHud(lord, hour, hordeNear) {
     }
   }
   g.save();
-  g.shadowColor = 'rgba(0,0,0,.9)'; g.shadowBlur = 6;
-  g.fillStyle = '#ffd98a';
+  g.shadowColor = 'rgba(0,0,0,.92)'; g.shadowBlur = 7;
+  g.fillStyle = '#f0d078';
   g.font = '600 21px Georgia, serif';
   g.fillText(lord.name.toUpperCase(), 18, 32);
-  g.fillStyle = '#e6e0f2';
+  g.fillStyle = '#e8dcc4';
   g.font = 'italic 15px Georgia, serif';
   g.fillText(`stands ${atStr}, looking ${DIRNAMES[lord.face]} to ${aheadStr}.`, 18, 54);
-  g.fillStyle = '#c0b8dc';
+  g.fillStyle = '#c8b898';
   g.font = '13px Georgia, serif';
   const hrs = lord.ap;
   g.fillText(`Day ${state.day} — ${phaseName(hour)}. ${hrs > 0 ? hrs + ' hours of daylight remain.' : 'Night has come; you must rest.'}`, 18, 74);
   if (hordeNear) {
-    g.fillStyle = '#ff8f9e';
+    g.fillStyle = '#e89880';
     g.font = '600 14px Georgia, serif';
     g.fillText('An Abyssal horde is near!', 18, 96);
   }
-  g.fillStyle = '#ffd98a'; g.font = '700 26px Georgia, serif'; g.textAlign = 'center';
+  g.fillStyle = '#f0d078'; g.font = '700 26px Georgia, serif'; g.textAlign = 'center';
   g.fillText(DIRSHORT[lord.face], W - 50, 40);
-  g.font = '11px Georgia, serif'; g.fillStyle = '#9d95c0';
+  g.font = '11px Georgia, serif'; g.fillStyle = '#b8a888';
   g.fillText('facing', W - 50, 54);
   g.textAlign = 'left';
   g.restore();
@@ -1352,7 +1353,7 @@ function hordeNearLord(lord) {
 /* Play view: low-poly WebGL when available, else the classic 2D panorama. */
 function renderPlayView(lord, time) {
   const hour = 6 + (AP_PER_DAY - lord.ap) * HOUR_STEP;
-  const doom = world.corruptR / 48;
+  const doom = world.corruptR / Math.max(48, MAPW * 0.8);
   const env = envColors(hour, doom);
   if (window.Lot3D) {
     tickCam(time);
@@ -1372,7 +1373,9 @@ function renderPlayView(lord, time) {
   }
 }
 
-/* ----------------------------- title scene ------------------------------ */
+/* ----------------------- cinematic title / end vistas -------------------
+   Prefer the low-poly WebGL world as a living backdrop (same engine as play).
+   Fall back to faceted 2D ridgelines + crystal Rift when Lot3D is unavailable. */
 function ridge(yBase, amp, seedOff, col, time, speed) {
   g.fillStyle = col;
   g.beginPath(); g.moveTo(0, H);
@@ -1382,22 +1385,232 @@ function ridge(yBase, amp, seedOff, col, time, speed) {
   }
   g.lineTo(W, H); g.closePath(); g.fill();
 }
+/* faceted low-poly silhouette ridge (echoes the 3D mesh look) */
+function ridgeFaceted(yBase, amp, seedOff, col, edge, time, speed) {
+  g.fillStyle = col;
+  g.beginPath(); g.moveTo(0, H);
+  const step = 28;
+  for (let x = 0; x <= W + step; x += step) {
+    const n = Math.sin(x * 0.012 + seedOff) * 0.55 + Math.sin(x * 0.031 + seedOff * 2.4 + time * speed) * 0.28;
+    const peak = yBase - Math.abs(n) * amp - n * amp * 0.25 - (x % (step * 2) ? 6 : 0);
+    g.lineTo(x, peak);
+  }
+  g.lineTo(W, H); g.closePath(); g.fill();
+  if (edge) {
+    g.strokeStyle = edge;
+    g.lineWidth = 1.2;
+    g.beginPath();
+    for (let x = 0; x <= W + step; x += step) {
+      const n = Math.sin(x * 0.012 + seedOff) * 0.55 + Math.sin(x * 0.031 + seedOff * 2.4 + time * speed) * 0.28;
+      const peak = yBase - Math.abs(n) * amp - n * amp * 0.25 - (x % (step * 2) ? 6 : 0);
+      if (x === 0) g.moveTo(x, peak); else g.lineTo(x, peak);
+    }
+    g.stroke();
+  }
+}
+/* crystal spire + oil-fire pit — 2D cousin of the WebGL Rift setpiece */
+function drawCrystalRift(x, y, s, time, closing) {
+  const open = 1 - clamp(closing || 0, 0, 1);
+  drawRift(x, y, s, time, closing);
+  if (open < 0.08) return;
+  const h = 200 * s * (0.4 + 0.6 * open);
+  /* crystal shaft */
+  g.save();
+  g.globalAlpha = 0.55 + 0.35 * open;
+  const cx = x + 18 * s, base = y - h * 0.15, tip = y - h * 1.15;
+  const crystal = g.createLinearGradient(cx - 14 * s, tip, cx + 18 * s, base);
+  crystal.addColorStop(0, 'rgba(230,200,255,.95)');
+  crystal.addColorStop(0.45, 'rgba(160,90,255,.75)');
+  crystal.addColorStop(1, 'rgba(60,20,120,.35)');
+  g.fillStyle = crystal;
+  g.beginPath();
+  g.moveTo(cx, tip);
+  g.lineTo(cx + 16 * s, base - h * 0.35);
+  g.lineTo(cx + 8 * s, base);
+  g.lineTo(cx - 10 * s, base);
+  g.lineTo(cx - 14 * s, base - h * 0.4);
+  g.closePath(); g.fill();
+  g.strokeStyle = 'rgba(255,230,255,.65)';
+  g.lineWidth = Math.max(1, 1.5 * s);
+  g.stroke();
+  /* oil-dark sheen at the pit lip */
+  g.globalAlpha = 0.45 * open;
+  g.fillStyle = 'rgba(12,6,18,.9)';
+  g.beginPath(); g.ellipse(x, y - 4 * s, 70 * s * open + 10 * s, 10 * s, 0, 0, 6.29); g.fill();
+  g.restore();
+  /* fire motes at the mouth */
+  for (let i = 0; i < 7; i++) {
+    const ph = (time * 0.9 + i * 0.14) % 1;
+    const fx = x + Math.sin(time * 2 + i * 1.7) * 28 * s;
+    const fy = y - 8 * s - ph * 40 * s;
+    g.fillStyle = rgba(i % 2 ? [255, 140, 60] : [255, 80, 40], (1 - ph) * 0.7 * open);
+    g.beginPath(); g.arc(fx, fy, (3.2 - ph * 2) * s, 0, 6.29); g.fill();
+  }
+}
+function drawCinematicVignette(mode) {
+  const vg = g.createRadialGradient(W * 0.5, H * 0.42, H * 0.12, W * 0.5, H * 0.5, H * 0.78);
+  if (mode === 'victory') {
+    vg.addColorStop(0, 'rgba(255,210,120,0)');
+    vg.addColorStop(0.55, 'rgba(40,24,8,0)');
+    vg.addColorStop(1, 'rgba(8,6,4,.55)');
+  } else if (mode === 'gameover') {
+    vg.addColorStop(0, 'rgba(180,40,100,0)');
+    vg.addColorStop(0.5, 'rgba(40,8,24,0)');
+    vg.addColorStop(1, 'rgba(8,2,10,.62)');
+  } else {
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(0.55, 'rgba(8,5,18,0)');
+    vg.addColorStop(1, 'rgba(4,2,10,.5)');
+  }
+  g.fillStyle = vg;
+  g.fillRect(0, 0, W, H);
+}
+/* best 8-way face index toward a map-space delta */
+function faceToward(dx, dy) {
+  let best = 0, bestDot = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const d = DIRS[i];
+    const fl = Math.hypot(d.dx, d.dy) || 1;
+    const dot = (dx * d.dx + dy * d.dy) / fl;
+    if (dot > bestDot) { bestDot = dot; best = i; }
+  }
+  return best;
+}
+/* WebGL backdrop using the real world mesh (title / end cinematics) */
+function renderLot3DCinematic(mode, time) {
+  if (!window.Lot3D || !world || !world.tiles) return false;
+  let x, y, face, hour, doom, bob, cineBack, cineLook, cineEye;
+  let cineProbes = null;
+  if (mode === 'title') {
+    /* high west vista, looking east — raised to clear hills/keeps entirely */
+    const sway = Math.sin(time * 0.1) * 0.9;
+    x = clamp(START_X + 2, 1, MAPW - 2);
+    y = clamp(START_Y + sway, 1, MAPH - 2);
+    face = 6; /* E */
+    hour = 19.1 + Math.sin(time * 0.25) * 0.35;
+    doom = 0.38;
+    bob = 0.04 + 0.03 * Math.sin(time * 0.45); /* gentler bob — less vertical noise */
+    cineBack = 2.4;
+    cineLook = 12;
+    cineEye = 2.85;
+    /* path lookahead along the slow north/south sway */
+    cineProbes = [];
+    for (let s = 0.15; s <= 2.4; s += 0.3) {
+      const fut = Math.sin((time + s) * 0.1) * 0.9;
+      cineProbes.push({ x: START_X + 2, y: clamp(START_Y + fut, 1, MAPH - 2) });
+    }
+  } else if (mode === 'victory') {
+    const t = clamp((time - state.endAnim) / 5, 0, 1);
+    x = clamp(RIFT_X - 4, 1, MAPW - 2);
+    y = clamp(RIFT_Y, 1, MAPH - 2);
+    face = 6;
+    hour = lerp(20.2, 8.2, t);
+    doom = 0.22 * (1 - t);
+    bob = 0.03;
+    cineBack = 3.2;
+    cineLook = 12;
+    cineEye = 2.6;
+  } else { /* gameover — slow full 360° high orbit of the Rift */
+    /* ~0.048 rad/s ≈ 130s per full revolution; continuous cos/sin = full circle */
+    const angRate = 0.048;
+    const ang = time * angRate;
+    const dist = 11.5;
+    x = clamp(RIFT_X + Math.cos(ang) * dist, 1.2, MAPW - 2.2);
+    y = clamp(RIFT_Y + Math.sin(ang) * dist, 1.2, MAPH - 2.2);
+    face = faceToward(RIFT_X - x, RIFT_Y - y); /* props / fallback only */
+    hour = 22.4;
+    doom = 0.88;
+    bob = 0.02;
+    cineBack = 2.0;     /* stay near the orbit ring; look is free toward Rift */
+    cineLook = 8;
+    cineEye = 3.85;     /* high enough to clear most ridges without harsh lifts */
+    /* sample future orbit points so height eases up before peaks, not during */
+    cineProbes = [];
+    for (let s = 0.4; s <= 5.5; s += 0.35) {
+      const a = ang + angRate * s;
+      cineProbes.push({
+        x: clamp(RIFT_X + Math.cos(a) * dist, 1.2, MAPW - 2.2),
+        y: clamp(RIFT_Y + Math.sin(a) * dist, 1.2, MAPH - 2.2),
+      });
+    }
+  }
+  const env = envColors(hour, doom);
+  const camCin = { pan: 0, zoom: 0, roll: 0, bob };
+  window.Lot3D.setVisible(true);
+  const renderOpts = {
+    lord: { x, y, face, ap: AP_PER_DAY, alive: true },
+    cam: camCin, world, state,
+    dirs: DIRS,
+    mapW: MAPW, mapH: MAPH,
+    env, hour, doom, time,
+    corruptKey: world.corruptR,
+    cineBack, cineLook, cineEye,
+    cineClear: true,
+    cineClearance: mode === 'gameover' ? 2.6 : mode === 'title' ? 2.25 : 2.1,
+    cineProbes,
+  };
+  /* smooth free look at the Rift (not 8-way snaps) for full 360 pan */
+  if (mode === 'gameover' || mode === 'victory') {
+    renderOpts.cineLookAt = { x: RIFT_X, y: RIFT_Y };
+  }
+  window.Lot3D.render(renderOpts);
+  g.clearRect(0, 0, W, H);
+  drawCinematicVignette(mode);
+  if (mode === 'victory') {
+    const t = clamp((time - state.endAnim) / 5, 0, 1);
+    if (t > 0.12) {
+      g.save();
+      g.globalAlpha = (t - 0.12) * 0.4;
+      for (let i = 0; i < 9; i++) {
+        const a = -Math.PI / 2 + (i - 4) * 0.2 + Math.sin(time * 0.4) * 0.03;
+        g.strokeStyle = 'rgba(255,220,140,.7)'; g.lineWidth = 12;
+        g.beginPath(); g.moveTo(W / 2, H * 0.55);
+        g.lineTo(W / 2 + Math.cos(a) * 720, H * 0.55 + Math.sin(a) * 720); g.stroke();
+      }
+      g.restore();
+      for (let i = 0; i < 28; i++) {
+        const ph = (time * 0.22 + i * 0.077) % 1;
+        const ex = (i * 149 + Math.sin(time + i * 1.7) * 40) % W;
+        g.fillStyle = rgba([255, 225, 150], (1 - ph) * 0.75 * t);
+        g.beginPath(); g.arc(ex, H - ph * H, 2.1 - ph, 0, 6.29); g.fill();
+      }
+    }
+  } else if (mode === 'gameover') {
+    for (let i = 0; i < 30; i++) {
+      const ph = (time * 0.13 + i * 0.09) % 1;
+      const ex = (i * 191 + Math.sin(time * 0.8 + i) * 50) % W;
+      g.fillStyle = rgba([160, 140, 170], (1 - ph) * 0.38);
+      g.beginPath(); g.arc(ex, ph * H, 1.5, 0, 6.29); g.fill();
+    }
+  } else {
+    /* title embers */
+    for (let i = 0; i < 18; i++) {
+      const ph = (time * 0.09 + i * 0.113) % 1;
+      const ex = (i * 173 + Math.sin(time * 0.6 + i) * 60) % W;
+      const ey = H - ph * H * 0.85;
+      g.fillStyle = rgba(i % 3 ? [240, 140, 255] : [255, 190, 120], (1 - ph) * 0.4);
+      g.beginPath(); g.arc(ex, ey, 1.5 + (1 - ph), 0, 6.29); g.fill();
+    }
+  }
+  return true;
+}
 function renderTitle(time) {
-  const env = envColors(19.4, 0.25);
+  if (renderLot3DCinematic('title', time)) return;
+  if (window.Lot3D) window.Lot3D.setVisible(false);
+  const env = envColors(19.4, 0.32);
   drawSky(env, 19.4, time);
-  /* pulsing rift glow bleeding over the horizon */
   const pulse = 0.75 + 0.25 * Math.sin(time * 1.7);
-  const glow = g.createRadialGradient(W * 0.62, HORIZON + 30, 10, W * 0.62, HORIZON + 30, 340 * pulse);
-  glow.addColorStop(0, 'rgba(240,120,255,.5)');
-  glow.addColorStop(0.4, 'rgba(170,50,220,.25)');
+  const glow = g.createRadialGradient(W * 0.68, HORIZON + 20, 8, W * 0.68, HORIZON + 20, 360 * pulse);
+  glow.addColorStop(0, 'rgba(240,120,255,.55)');
+  glow.addColorStop(0.35, 'rgba(170,50,220,.28)');
   glow.addColorStop(1, 'rgba(120,20,160,0)');
   g.fillStyle = glow; g.fillRect(0, 0, W, H);
-  ridge(HORIZON + 46, 120, 1.7, rgb(colLerp(env.sil, [70, 60, 110], 0.4)), time, 0.05);
-  ridge(HORIZON + 96, 95, 4.2, rgb(colLerp(env.sil, [44, 36, 74], 0.4)), time, 0.08);
-  ridge(HORIZON + 160, 70, 8.9, rgb([20, 14, 34]), time, 0.12);
-  g.fillStyle = '#0d0918';
-  g.fillRect(0, H - 60, W, 60);
-  /* drifting embers */
+  ridgeFaceted(HORIZON + 40, 130, 1.7, rgb(colLerp(env.sil, [62, 52, 98], 0.45)), 'rgba(140,110,180,.25)', time, 0.05);
+  ridgeFaceted(HORIZON + 90, 100, 4.2, rgb(colLerp(env.sil, [40, 32, 68], 0.4)), 'rgba(100,80,140,.2)', time, 0.08);
+  ridgeFaceted(HORIZON + 150, 72, 8.9, rgb([18, 12, 32]), 'rgba(60,40,90,.18)', time, 0.12);
+  drawCrystalRift(W * 0.72, H * 0.78, 1.15, time, 0);
+  g.fillStyle = 'rgba(8,5,16,.75)';
+  g.fillRect(0, H - 70, W, 70);
   for (let i = 0; i < 26; i++) {
     const ph = (time * 0.09 + i * 0.113) % 1;
     const ex = (i * 173 + Math.sin(time * 0.6 + i) * 60) % W;
@@ -1405,17 +1618,20 @@ function renderTitle(time) {
     g.fillStyle = rgba(i % 3 ? [240, 140, 255] : [255, 190, 120], (1 - ph) * 0.5);
     g.beginPath(); g.arc(ex, ey, 1.6 + (1 - ph), 0, 6.29); g.fill();
   }
+  drawCinematicVignette('title');
 }
 
 /* -------------------------- end screen scenes --------------------------- */
 function renderVictory(time) {
-  const t = clamp((time - state.endAnim) / 5, 0, 1);       /* rift sealing over 5s */
-  const env = envColors(lerp(20, 8.5, t), 0.25 * (1 - t)); /* night -> golden dawn */
+  if (renderLot3DCinematic('victory', time)) return;
+  if (window.Lot3D) window.Lot3D.setVisible(false);
+  const t = clamp((time - state.endAnim) / 5, 0, 1);
+  const env = envColors(lerp(20, 8.5, t), 0.25 * (1 - t));
   drawSky(env, lerp(20, 8.5, t), time);
   drawGroundPlane(env);
-  ridge(HORIZON + 60, 110, 2.3, rgb(colLerp(env.sil, [80, 70, 110], 0.4)), time, 0.03);
-  drawRift(W / 2, H * 0.86, 1.5, time, t);
-  if (t > 0.15) { /* golden rays + rising sparks */
+  ridgeFaceted(HORIZON + 55, 115, 2.3, rgb(colLerp(env.sil, [80, 70, 110], 0.4)), 'rgba(160,140,100,.2)', time, 0.03);
+  drawCrystalRift(W / 2, H * 0.86, 1.5, time, t);
+  if (t > 0.15) {
     g.save(); g.globalAlpha = (t - 0.15) * 0.5;
     for (let i = 0; i < 9; i++) {
       const a = -Math.PI / 2 + (i - 4) * 0.22 + Math.sin(time * 0.4) * 0.03;
@@ -1431,8 +1647,11 @@ function renderVictory(time) {
       g.beginPath(); g.arc(ex, H - ph * H, 2.2 - ph, 0, 6.29); g.fill();
     }
   }
+  drawCinematicVignette('victory');
 }
 function renderGameOver(time) {
+  if (renderLot3DCinematic('gameover', time)) return;
+  if (window.Lot3D) window.Lot3D.setVisible(false);
   const env = { top:[12,4,20], bot:[60,10,44], ground:[18,8,26], fog:[70,20,60], sil:[10,4,16] };
   drawSky(env, 23, time);
   const pulse = 0.7 + 0.3 * Math.sin(time * 2.6);
@@ -1442,15 +1661,15 @@ function renderGameOver(time) {
   glow.addColorStop(1, 'rgba(100,0,80,0)');
   g.fillStyle = glow; g.fillRect(0, 0, W, H);
   drawGroundPlane(env);
-  ridge(HORIZON + 55, 115, 3.1, '#150a20', time, 0.04);
-  drawRift(W / 2, H * 0.88, 1.9, time, 0);
-  /* falling ash */
+  ridgeFaceted(HORIZON + 50, 120, 3.1, '#150a20', 'rgba(120,40,80,.25)', time, 0.04);
+  drawCrystalRift(W / 2, H * 0.88, 1.9, time, 0);
   for (let i = 0; i < 34; i++) {
     const ph = (time * 0.13 + i * 0.09) % 1;
     const ex = (i * 191 + Math.sin(time * 0.8 + i) * 50) % W;
     g.fillStyle = rgba([160, 140, 170], (1 - ph) * 0.4);
     g.beginPath(); g.arc(ex, ph * H, 1.5, 0, 6.29); g.fill();
   }
+  drawCinematicVignette('gameover');
 }
 
 /* ------------------------------- portrait ------------------------------- */
@@ -1556,7 +1775,7 @@ function drawPortrait(lord) {
 }
 
 /* ------------------------------- minimap -------------------------------- */
-const MAP_TS = 9;   /* px per tile: 60x44 world → 540x396 canvas */
+const MAP_TS = 5;   /* px per tile: 120×88 world → 600×440 canvas */
 const MAP_COLORS = {
   plains:'#31502e', forest:'#1c3d22', hills:'#4d5340', downs:'#5d6342',
   mountains:'#5b5b70', wasteland:'#3a2b44', keep:'#31502e', citadel:'#31502e',
@@ -1639,19 +1858,19 @@ function updateHUD() {
   if (ahead && ahead.t !== 'mountains') {
     let cost = MOVE_COST[ahead.t] || 1;
     if (ahead.corrupt) cost += 1;
-    aheadHint = ` &nbsp;<span style="color:#6e668e">→${cost}h</span>`;
+    aheadHint = ` &nbsp;<span style="color:#9a8870">→${cost}h</span>`;
   } else if (ahead && ahead.t === 'mountains') {
-    aheadHint = ` &nbsp;<span style="color:#6e668e">→blocked</span>`;
+    aheadHint = ` &nbsp;<span style="color:#9a8870">→blocked</span>`;
   }
   $('lordInfo').innerHTML =
     `<span class="nm">${esc(l.name)}</span><br><span class="tt">${esc(l.title)}</span><br>` +
     `⚔ ${l.war} warriors &nbsp;♞ ${l.rid} riders<br>` +
-    `<span style="color:#8fd0a0">${pips}</span>${aheadHint} &nbsp;<span style="color:#6e668e">(lord ${state.active + 1}/${aliveN})</span>`;
+    `<span style="color:#a8d090">${pips}</span>${aheadHint} &nbsp;<span style="color:#9a8870">(Lord ${state.active + 1}/${aliveN})</span>`;
   const host = totalStr() | 0;
   const near = hostNearRift() | 0;
   $('hudRight').innerHTML =
     `<span class="day">Day ${Math.min(state.day, DAY_LIMIT)} of ${DAY_LIMIT}</span><br>` +
-    `Host strength: <b style="color:#e8d9a0">${host}</b><br>` +
+    `Host strength: <b style="color:#f0d078">${host}</b><br>` +
     `<span class="qi">${world.riftKnown ? `At the Rift: ${near} / ${SEAL_STRENGTH} needed` : `Seek the Abyssal Rift — ${SEAL_STRENGTH} spears must gather`}</span><br>` +
     `<span id="padInfo">${padConnected ? '🎮 gamepad ready' : ''}</span>`;
 }
@@ -1941,7 +2160,7 @@ function doRest() {
   const citadelDist = Math.hypot(START_X - RIFT_X, START_Y - RIFT_Y);
   if (world.corruptR >= citadelDist) {
     queueEnd('gameover', 'The corruption of the Abyss has swallowed the Citadel of Dawn. The last light of the free lands is gone.');
-  } else if (world.corruptR >= citadelDist - 6) {
+  } else if (world.corruptR >= citadelDist - 10) {
     notes.push('<span class="bad">The corruption gnaws at the very fields of the Citadel of Dawn!</span>');
   } else if (world.corruptR >= citadelDist * 0.6) {
     notes.push('<span class="arc">The purple blight spreads ever westward…</span>');
@@ -2251,14 +2470,71 @@ async function refreshContinueButton() {
 function syncOverlays() {
   $('ovTitle').classList.toggle('hidden', state.screen !== 'title');
   $('ovEnd').classList.toggle('hidden', state.screen !== 'end');
+  $('hud').classList.toggle('hidden', state.screen !== 'play');
   $('ovPause').classList.add('hidden');
+  closeSettings();
   if (state.screen !== 'play') { $('ovMap').classList.add('hidden'); $('ovModal').classList.add('hidden'); }
 }
 
+/* ------------------------------- settings (intro) ----------------------- */
+const settingsOpen = () => !$('ovSettings').classList.contains('hidden');
+function openSettings() {
+  const ov = $('ovSettings');
+  if (!ov) return;
+  ov.classList.remove('hidden');
+  const panel = $('controlsPanel');
+  if (panel) panel.classList.add('hidden');
+  const cbtn = $('controlsBtn');
+  if (cbtn) cbtn.textContent = 'Controls';
+  updateMusicUI();
+}
+function closeSettings() {
+  const ov = $('ovSettings');
+  if (ov) ov.classList.add('hidden');
+  const panel = $('controlsPanel');
+  if (panel) panel.classList.add('hidden');
+  const cbtn = $('controlsBtn');
+  if (cbtn) cbtn.textContent = 'Controls';
+}
+function toggleControlsPanel() {
+  const panel = $('controlsPanel');
+  if (!panel) return;
+  panel.classList.toggle('hidden');
+  const btn = $('controlsBtn');
+  if (btn) btn.textContent = panel.classList.contains('hidden') ? 'Controls' : 'Hide Controls';
+}
+
 /* ------------------------------- pause menu ----------------------------- */
+const PAUSE_PUNS = [
+  'Taken a Knee',
+  'Strategic Nap',
+  'Siege Snooze',
+  'Truce for Tea',
+  'Banner Down, Boots Up',
+  'War Will Wait',
+  'Halting the Host',
+  'Shields at Ease',
+  'A Brief Desertion',
+  'Couching the Lance',
+  'Campfire Council',
+  'Breather Before Battle',
+  'The Rift Can Wait',
+  'Arms at Rest',
+  'Tactical Tea Break',
+  'Saddle Off a Spell',
+  'Hold the Line… Still',
+  'Momentary Mutiny (Peaceful)',
+  'Rest Is Resistance',
+  'Lull Before the Lunge',
+];
 const pauseOpen = () => !$('ovPause').classList.contains('hidden');
+function pickPausePun() {
+  return PAUSE_PUNS[(Math.random() * PAUSE_PUNS.length) | 0];
+}
 function openPause() {
   $('ovPause').classList.remove('hidden');
+  const title = $('pauseTitle');
+  if (title) title.textContent = pickPausePun();
   autoSave(); /* silent autosave whenever the host halts */
   $('pauseScores').innerHTML = 'Consulting the annals…';
   fetchScores().then(s => renderScoreList(s, -1, 'pauseScores'))
@@ -2288,7 +2564,7 @@ async function startGame() {
     `<i>"Ride east, Athelorn. Rally every lord who yet stands free — Ithrilan foretold that only a host of ` +
     `<b>${SEAL_STRENGTH} spears</b>, gathered at the very brink, can seal the Abyssal Rift. ` +
     `You have <b>${DAY_LIMIT} days</b> before the corruption swallows the Citadel of Dawn."</i><br>` +
-    `<small style="color:#9d95c0">WASD or arrows to turn and ride, R to rest, M for map, Esc to pause (save from the pause menu). The quest auto-saves.</small>`);
+    `<small style="color:#9a8870">WASD or arrows to turn and ride, R to rest, M for map, Tab/Q for lords, Esc to pause (save from the pause menu). Music: U or Settings. The quest auto-saves.</small>`);
   updateHUD();
   autoSave();
   refreshContinueButton();
@@ -2307,31 +2583,31 @@ async function goEnd(outcome, cause) {
     ? 10000 + (DAY_LIMIT - days) * 250 + state.stats.battles * 150 + (totalStr() | 0) * 2 + state.stats.recruited * 100
     : days * 50 + state.stats.battles * 150 + state.stats.recruited * 100;
   $('ovEnd').className = 'ov ' + (won ? 'victory' : 'gameover');
-  $('endTitle').textContent = won ? '✦ The Rift Is Sealed ✦' : 'Darkness Falls';
+  $('endTitle').textContent = won ? '✦ The Rift Is Sealed ✦' : 'The Crystal Darkens';
   $('endCause').innerHTML = cause + (won
-    ? '<br><b style="color:#ffe9a8">Congratulations, Lord of Twilight — the free lands sing your name!</b>'
-    : '<br><i>Yet legends say the Quest may be attempted again…</i>');
+    ? '<br><b style="color:#ffe9a8">The oil-fire dies, the spire goes quiet — congratulations, Lord of Twilight!</b>'
+    : '<br><i>Shadow pours unchecked from the east. Yet legends say the Quest may be attempted again…</i>');
   $('endStats').innerHTML =
     `Days on the road: ${days} &nbsp;·&nbsp; Lords rallied: ${state.stats.recruited + 1}` +
     `<br>Battles won: ${state.stats.battles} &nbsp;·&nbsp; Host remaining: ${totalStr() | 0}` +
     `<br><b style="color:#ffd98a">SCORE: ${state.finalScore}</b>`;
   $('scoreRow').style.display = '';
   $('nameIn').value = localStorage.getItem('lot_name') || '';
-  $('endScores').innerHTML = 'Fetching the annals…';
-  fetchScores().then(renderScoreList).catch(() => { $('endScores').innerHTML = '<i>The annals are unreachable (offline).</i>'; });
   syncOverlays();
 }
 
 /* ============================================================ HIGH SCORES
    Persisted by the Electron main process (the one external file:
    highscores.txt in the per-user data dir), reached over a contextBridge
-   API exposed as window.lotScores. Falls back gracefully if absent.       */
+   API exposed as window.lotScores. Falls back gracefully if absent.
+   Annals are shown on the intro / pause screens — not the end screen.      */
 async function fetchScores() {
   if (!window.lotScores) return [];
   return (await window.lotScores.get()).scores || [];
 }
-function renderScoreList(scores, rank, elId = 'endScores') {
+function renderScoreList(scores, rank, elId = 'pauseScores') {
   const el = $(elId);
+  if (!el) return;
   if (!scores.length) { el.innerHTML = '<i>No names yet stand in the annals. Be the first!</i>'; return; }
   el.innerHTML = '<b>— THE ANNALS OF TWILIGHT —</b><br>' + scores.slice(0, 10).map((s, i) =>
     `<span class="${i === rank ? 'me' : ''}">${String(i + 1).padStart(2, ' ')}. ${esc(s.name).padEnd(16, '·')} ${String(s.score | 0).padStart(6, ' ')}  ${s.outcome === 'victory' ? '✦' : '✝'} day ${s.days | 0}</span>`
@@ -2345,46 +2621,86 @@ async function submitScore() {
   $('scoreRow').style.display = 'none';
   try {
     if (!window.lotScores) throw new Error('no scores bridge');
-    const data = await window.lotScores.add({
+    await window.lotScores.add({
       name, score: state.finalScore, days: Math.min(state.day, DAY_LIMIT), outcome: state.outcome,
     });
-    renderScoreList(data.scores || [], data.rank);
+    /* refresh intro annals for next time they visit the title */
+    loadTitleScores();
   } catch {
-    $('endScores').innerHTML = '<i>The annals are unreachable — your deed lives on in memory alone.</i>';
+    /* offline — name still lives in localStorage for next attempt */
   }
 }
 async function loadTitleScores() {
+  const el = $('titleScores');
+  if (!el) return;
   try {
     const scores = await fetchScores();
-    $('titleScores').innerHTML = scores.length
-      ? '<b>THE ANNALS:</b> ' + scores.slice(0, 5).map((s, i) => `${i + 1}. ${esc(s.name)} ${s.score | 0}${s.outcome === 'victory' ? '✦' : ''}`).join(' &nbsp;·&nbsp; ')
-      : '<i>No legends yet written — be the first.</i>';
-  } catch { $('titleScores').innerHTML = ''; }
+    if (!scores.length) {
+      el.innerHTML = '<b>THE ANNALS</b><span class="annals-line"><i>No legends yet written — be the first.</i></span>';
+      return;
+    }
+    el.innerHTML =
+      '<b>THE ANNALS</b>' +
+      scores.slice(0, 8).map((s, i) =>
+        `<span class="annals-line">${i + 1}. ${esc(s.name)} — ${s.score | 0}` +
+        `${s.outcome === 'victory' ? ' ✦' : ''} · day ${s.days | 0}</span>`
+      ).join('');
+  } catch { el.innerHTML = ''; }
+}
+function annalsOpen() {
+  const el = $('titleScores');
+  return !!(el && !el.classList.contains('hidden'));
+}
+function setAnnalsVisible(on) {
+  const el = $('titleScores');
+  const btn = $('annalsBtn');
+  if (el) el.classList.toggle('hidden', !on);
+  if (btn) btn.textContent = on ? 'Hide Annals' : 'Annals';
+}
+function toggleAnnals() {
+  if (state.screen !== 'title') return;
+  const next = !annalsOpen();
+  setAnnalsVisible(next);
+  if (next) loadTitleScores();
 }
 
 /* ================================================================= INPUT */
 function dispatch(act) {
   if ((act === 'confirm' || act === 'cancel') && modalOpen()) { closeModal(); return; }
+  /* settings overlay (intro) — Esc / Close dismisses first */
+  if (settingsOpen()) {
+    if (act === 'closeSettings' || act === 'cancel' || act === 'resume') { closeSettings(); return; }
+    if (act === 'toggleMusic') { setMusic(!musicOn); return; }
+    if (act === 'toggleControls') { toggleControlsPanel(); return; }
+    return;
+  }
   switch (act) {
-    case 'start':        if (state.screen === 'title') startGame(); return;
-    case 'continue':     if (state.screen === 'title' || pauseOpen()) continueQuest(); return;
-    case 'restart':      if (state.screen === 'end' || pauseOpen()) startGame(); return;
-    case 'resume':       closePause(); return;
-    case 'save':         if (state.screen === 'play') saveQuest(); return;
+    case 'start':         if (state.screen === 'title') startGame(); return;
+    case 'continue':      if (state.screen === 'title' || pauseOpen()) continueQuest(); return;
+    case 'restart':       if (state.screen === 'end' || pauseOpen()) startGame(); return;
+    case 'resume':        closePause(); return;
+    case 'save':          if (state.screen === 'play') saveQuest(); return;
+    case 'toggleAnnals':  if (state.screen === 'title') toggleAnnals(); return;
+    case 'openSettings':
+      if (state.screen === 'title' || pauseOpen()) openSettings();
+      return;
+    case 'closeSettings': closeSettings(); return;
+    case 'toggleControls': if (settingsOpen()) toggleControlsPanel(); return;
     case 'toTitle':
       if (state.screen === 'end' || pauseOpen()) {
         if (state.screen === 'play') autoSave();
         closePause();
         state.screen = 'title';
         syncOverlays();
+        setAnnalsVisible(false);
         loadTitleScores();
         refreshContinueButton();
         playMusic('title');
       }
       return;
-    case 'quit':         quitGame(); return;
-    case 'submitScore':  submitScore(); return;
-    case 'toggleMusic':  setMusic(!musicOn); return;   /* works on any screen */
+    case 'quit':          quitGame(); return;
+    case 'submitScore':   submitScore(); return;
+    case 'toggleMusic':   setMusic(!musicOn); return;   /* U key anywhere; also settings button */
   }
   if (state.screen !== 'play' || modalOpen()) return;
   /* pause menu takes precedence over all other play input */
@@ -2508,14 +2824,12 @@ function frame(ts) {
   const time = ts / 1000;
   pollGamepad();
   if (state.screen === 'title') {
-    if (window.Lot3D) window.Lot3D.setVisible(false);
     renderTitle(time);
   } else if (state.screen === 'play') {
     const lord = activeLord();
     if (lord) renderPlayView(lord, time);
     if (!$('ovMap').classList.contains('hidden')) renderMap();
   } else if (state.screen === 'end') {
-    if (window.Lot3D) window.Lot3D.setVisible(false);
     if (state.outcome === 'victory') renderVictory(time);
     else renderGameOver(time);
   }
@@ -2526,6 +2840,7 @@ function frame(ts) {
 newGame();
 state.screen = 'title';
 syncOverlays();
+setAnnalsVisible(false);
 loadTitleScores();
 refreshContinueButton();
 playMusic('title');

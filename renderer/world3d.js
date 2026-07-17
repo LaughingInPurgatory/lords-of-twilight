@@ -8,7 +8,7 @@ const FOG_NEAR = 14;
 const FOG_FAR = 48;
 
 const H = {
-  plains: 0.02, downs: 0.18, hills: 0.55, forest: 0.08, mountains: 1.4,
+  plains: 0.02, downs: 0.18, hills: 0.55, forest: 0.08, mountains: 2.05,
   wasteland: 0.04, keep: 0.06, citadel: 0.08, village: 0.05, tower: 0.06, rift: -1.85,
 };
 
@@ -174,6 +174,9 @@ export function createLot3D(host, width, height) {
   renderer.domElement.style.display = 'block';
   renderer.domElement.style.width = '100%';
   renderer.domElement.style.height = 'auto';
+  /* sun-driven landscape shadows */
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   host.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -185,7 +188,22 @@ export function createLot3D(host, width, height) {
   scene.add(amb);
   const sunLight = new THREE.DirectionalLight(0xfff2d8, 0.9);
   sunLight.position.set(12, 22, 6);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(2048, 2048);
+  sunLight.shadow.bias = -0.00035;
+  sunLight.shadow.normalBias = 0.035;
+  sunLight.shadow.radius = 2.5;
+  const shCam = sunLight.shadow.camera;
+  shCam.near = 2;
+  shCam.far = 90;
+  const SHADOW_EXT = 24; /* half-extent of ground covered around the focus */
+  shCam.left = -SHADOW_EXT;
+  shCam.right = SHADOW_EXT;
+  shCam.top = SHADOW_EXT;
+  shCam.bottom = -SHADOW_EXT;
+  shCam.updateProjectionMatrix();
   scene.add(sunLight);
+  scene.add(sunLight.target);
   const hemi = new THREE.HemisphereLight(0x9ec8ff, 0x3a4a28, 0.35);
   scene.add(hemi);
 
@@ -432,7 +450,8 @@ export function createLot3D(host, width, height) {
       obj.traverse(c => {
         if (c.isMesh) {
           c.material = spireMat;
-          c.castShadow = false;
+          c.castShadow = true;
+          c.receiveShadow = true;
         }
       });
       crystalSpireTemplate = obj;
@@ -455,7 +474,8 @@ export function createLot3D(host, width, height) {
     while (terrainGroup.children.length) terrainGroup.remove(terrainGroup.children[0]);
   }
 
-  /* Multi-texture terrain: blend grass/ground/rock at shared corners */
+  /* Multi-texture terrain: blend grass/ground/rock + manual sun-shadow sample.
+     (Avoid ShaderMaterial lights:true — it steals texture units from uGrass/uGround/uRock.) */
   const terrainUniforms = {
     uGrass: { value: null },
     uGround: { value: null },
@@ -468,6 +488,10 @@ export function createLot3D(host, width, height) {
     uFogColor: { value: new THREE.Color(0.7, 0.75, 0.85) },
     uFogNear: { value: FOG_NEAR },
     uFogFar: { value: FOG_FAR },
+    uShadowStrength: { value: 0.55 },
+    uShadowMap: { value: null },
+    uShadowMatrix: { value: new THREE.Matrix4() },
+    uReceiveShadow: { value: 0 },
   };
 
   function makeTerrainMat() {
@@ -485,6 +509,8 @@ export function createLot3D(host, width, height) {
         varying vec2 vUv;
         varying vec3 vWorldNormal;
         varying vec3 vWorldPos;
+        varying vec4 vShadowCoord;
+        uniform mat4 uShadowMatrix;
         void main() {
           vColor = color;
           vBlend = blend;
@@ -492,6 +518,7 @@ export function createLot3D(host, width, height) {
           vec4 wp = modelMatrix * vec4(position, 1.0);
           vWorldPos = wp.xyz;
           vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vShadowCoord = uShadowMatrix * wp;
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
@@ -500,6 +527,7 @@ export function createLot3D(host, width, height) {
         uniform sampler2D uGrass;
         uniform sampler2D uGround;
         uniform sampler2D uRock;
+        uniform sampler2D uShadowMap;
         uniform vec3 uSunDir;
         uniform vec3 uSunColor;
         uniform vec3 uAmbColor;
@@ -508,11 +536,32 @@ export function createLot3D(host, width, height) {
         uniform vec3 uFogColor;
         uniform float uFogNear;
         uniform float uFogFar;
+        uniform float uShadowStrength;
+        uniform float uReceiveShadow;
         varying vec3 vColor;
         varying vec3 vBlend;
         varying vec2 vUv;
         varying vec3 vWorldNormal;
         varying vec3 vWorldPos;
+        varying vec4 vShadowCoord;
+
+        /* soft 3×3 PCF over the sun's depth map */
+        float sampleShadow(vec4 sc) {
+          if (uReceiveShadow < 0.5) return 1.0;
+          vec3 proj = sc.xyz / sc.w;
+          proj = proj * 0.5 + 0.5;
+          if (proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0 || proj.z > 1.0) return 1.0;
+          float bias = 0.0025;
+          float shadow = 0.0;
+          vec2 texel = vec2(1.0 / 2048.0);
+          for (int x = -1; x <= 1; x++) {
+            for (int y = -1; y <= 1; y++) {
+              float d = texture2D(uShadowMap, proj.xy + vec2(float(x), float(y)) * texel).r;
+              shadow += (proj.z - bias > d) ? 0.0 : 1.0;
+            }
+          }
+          return shadow / 9.0;
+        }
 
         void main() {
           /* soft splat — weights already averaged at corners */
@@ -529,10 +578,18 @@ export function createLot3D(host, width, height) {
 
           vec3 N = normalize(vWorldNormal);
           vec3 L = normalize(uSunDir);
-          float diff = max(dot(N, L), 0.0);
+          float ndl = max(dot(N, L), 0.0);
           /* soft wrap lighting so flat shading still reads form */
           float wrap = max(dot(N, L) * 0.5 + 0.5, 0.0);
-          vec3 lit = albedo * (uAmbColor * uAmbInt + uSunColor * uSunInt * mix(diff, wrap, 0.35));
+          float lambert = mix(ndl, wrap, 0.35);
+
+          float sh = sampleShadow(vShadowCoord);
+          float shade = mix(1.0 - uShadowStrength, 1.0, sh);
+
+          vec3 amb = uAmbColor * uAmbInt;
+          vec3 sun = uSunColor * uSunInt * lambert * shade;
+          vec3 bounce = uAmbColor * (0.08 * uSunInt * (1.0 - sh));
+          vec3 lit = albedo * (amb + sun + bounce);
 
           float depth = length(vWorldPos - cameraPosition);
           float fogF = smoothstep(uFogNear, uFogFar, depth);
@@ -586,13 +643,13 @@ export function createLot3D(host, width, height) {
     const t = tiles[iy * mw + ix];
     let h = terrainH(t.t);
     if (t.t === 'mountains') {
-      /* ridged multi-octave height — real peaks, not flat plateaus + stuck-on cones */
+      /* ridged multi-octave height — tall peaks so massifs read against low hills */
       const n1 = hash(ix, iy, 3);
       const n2 = hash(ix * 3 + 1, iy * 2 + 2, 7);
       const n3 = hash(ix + iy * 17, iy - ix * 3, 19);
-      h = 1.05 + n1 * 1.15 + n2 * 0.7;           /* ~1.05–2.9 */
-      if (n3 > 0.7) h += (n3 - 0.7) * 2.4;       /* occasional sharp summit */
-      /* fringe of a mountain mass is lower (foothills) */
+      h = 1.55 + n1 * 1.55 + n2 * 0.95;          /* ~1.55–4.05 base ridges */
+      if (n3 > 0.68) h += (n3 - 0.68) * 3.1;     /* occasional sharp summit */
+      /* fringe of a mountain mass is lower (foothills) — still above hills */
       let mCount = 0, neigh = 0;
       for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
         if (!dx && !dy) continue;
@@ -602,9 +659,9 @@ export function createLot3D(host, width, height) {
         if (tiles[ny * mw + nx].t === 'mountains') mCount++;
       }
       const interior = neigh ? mCount / neigh : 1;
-      h *= 0.4 + 0.6 * interior;
+      h *= 0.48 + 0.62 * interior;               /* fringe ~half height, core full */
     } else if (t.t === 'hills') {
-      h += hash(ix, iy, 4) * 0.28;
+      h += hash(ix, iy, 4) * 0.28;               /* stays ~0.55–0.83 — well below peaks */
     }
     return h;
   }
@@ -648,6 +705,8 @@ export function createLot3D(host, width, height) {
     }
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(x, (y0 != null ? y0 : 0) + h / 2, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     if (tx != null) tagTile(mesh, tx, ty);
     parent.add(mesh);
     return mesh;
@@ -659,6 +718,8 @@ export function createLot3D(host, width, height) {
       : new THREE.MeshLambertMaterial({ color: color != null ? color : 0x888888 });
     const mesh = new THREE.Mesh(new THREE.ConeGeometry(r, h, seg || 6), mat);
     mesh.position.set(x, y + h / 2, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     if (tx != null) tagTile(mesh, tx, ty);
     parent.add(mesh);
     return mesh;
@@ -719,8 +780,8 @@ export function createLot3D(host, width, height) {
             c[0] /= tints.length; c[1] /= tints.length; c[2] /= tints.length;
           }
           /* snow only on high rock — by height, not random cones */
-          if (py > 1.85 && w[2] > 0.35 && !(tile.corrupt)) {
-            const snowAmt = Math.min(1, (py - 1.85) / 0.9) * Math.min(1, w[2] * 1.2);
+          if (py > 2.35 && w[2] > 0.35 && !(tile.corrupt)) {
+            const snowAmt = Math.min(1, (py - 2.35) / 1.15) * Math.min(1, w[2] * 1.2);
             c = [
               c[0] + (SNOW[0] - c[0]) * snowAmt,
               c[1] + (SNOW[1] - c[1]) * snowAmt,
@@ -740,7 +801,11 @@ export function createLot3D(host, width, height) {
       geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
       geo.setAttribute('blend', new THREE.Float32BufferAttribute(blend, 3));
       geo.computeVertexNormals();
-      terrainGroup.add(new THREE.Mesh(geo, makeTerrainMat()));
+      const tMesh = new THREE.Mesh(geo, makeTerrainMat());
+      tMesh.receiveShadow = true;
+      tMesh.castShadow = true; /* mountains / hills cast onto low ground */
+      tMesh.name = 'terrain';
+      terrainGroup.add(tMesh);
     }
 
     /* props per tile — keep counts low */
@@ -1270,6 +1335,8 @@ export function createLot3D(host, width, height) {
       const grassMesh = new THREE.InstancedMesh(bladeGeo, bladeMat, grassPlacements.length);
       grassMesh.frustumCulled = true;
       grassMesh.name = 'grassBlades';
+      grassMesh.castShadow = false; /* too many blades — receive only for performance */
+      grassMesh.receiveShadow = true;
       const dummy = new THREE.Object3D();
       const c = new THREE.Color();
       for (let i = 0; i < grassPlacements.length; i++) {
@@ -1313,10 +1380,12 @@ export function createLot3D(host, width, height) {
     const body = new THREE.Mesh(hordeBodyGeo, hordeBodyMat);
     body.position.y = 0.14;
     body.scale.set(1, 1.05, 0.9);
+    body.castShadow = true;
     fig.add(body);
 
     const head = new THREE.Mesh(hordeHeadGeo, hordeHeadMat);
     head.position.y = 0.32;
+    head.castShadow = true;
     fig.add(head);
 
     /* twin horns */
@@ -1324,11 +1393,13 @@ export function createLot3D(host, width, height) {
     hornL.position.set(-0.04, 0.38, 0);
     hornL.rotation.z = 0.45;
     hornL.rotation.x = -0.2;
+    hornL.castShadow = true;
     fig.add(hornL);
     const hornR = new THREE.Mesh(hordeHornGeo, hordeHornMat);
     hornR.position.set(0.04, 0.38, 0);
     hornR.rotation.z = -0.45;
     hornR.rotation.x = -0.2;
+    hornR.castShadow = true;
     fig.add(hornR);
 
     /* glowing eyes */
@@ -1516,12 +1587,35 @@ export function createLot3D(host, width, height) {
 
     const dayAmt = night ? 0.2 : hour < 8 || hour > 18 ? 0.5 : 1;
     const above = Math.max(0, sdir.y);
-    sunLight.intensity = (0.25 + dayAmt * 0.75) * (0.35 + above * 0.75);
+    sunLight.intensity = (0.28 + dayAmt * 0.82) * (0.3 + above * 0.85);
     sunLight.color.copy(sunCol);
-    sunLight.position.copy(sdir).multiplyScalar(40);
-    amb.intensity = night ? 0.22 : 0.45 + dayAmt * 0.18;
+    /* place sun + shadow frustum around the active viewpoint (play or cinematic) */
+    const focusX = (lord && Number.isFinite(lord.x)) ? lord.x + 0.5 : 0;
+    const focusZ = (lord && Number.isFinite(lord.y)) ? lord.y + 0.5 : 0;
+    const focusY = (lord && world && world.tiles)
+      ? sampleH(world.tiles, lord.x, lord.y, mw, mh)
+      : 0;
+    const sunDist = 42;
+    sunLight.position.set(
+      focusX + sdir.x * sunDist,
+      focusY + Math.max(8, sdir.y * sunDist),
+      focusZ + sdir.z * sunDist,
+    );
+    sunLight.target.position.set(focusX, focusY, focusZ);
+    sunLight.target.updateMatrixWorld();
+    /* long shadows at dawn/dusk: widen frustum slightly when sun is low */
+    const lowSun = 1 + (1 - above) * 0.35;
+    const ext = SHADOW_EXT * lowSun;
+    shCam.left = -ext; shCam.right = ext;
+    shCam.top = ext; shCam.bottom = -ext;
+    shCam.far = 70 + (1 - above) * 30;
+    shCam.updateProjectionMatrix();
+    /* no map-cast shadows at night / sun under horizon */
+    sunLight.castShadow = above > 0.06 && !night && sunLight.intensity > 0.18;
+
+    amb.intensity = night ? 0.28 : 0.38 + dayAmt * 0.12;
     amb.color.set(night ? 0x6a78a8 : taint > 0.4 ? 0xb8a0d0 : 0xc8d4f0);
-    hemi.intensity = night ? 0.1 : 0.32;
+    hemi.intensity = night ? 0.14 : 0.28 + dayAmt * 0.08;
     hemi.color.set(night ? 0x304060 : 0x9ec8ff);
     hemi.groundColor.set(taint > 0.3 ? 0x3a2048 : 0x3a4a28);
 
@@ -1530,13 +1624,24 @@ export function createLot3D(host, width, height) {
     terrainUniforms.uSunColor.value.copy(sunCol);
     terrainUniforms.uSunInt.value = sunLight.intensity;
     terrainUniforms.uAmbColor.value.copy(amb.color);
-    terrainUniforms.uAmbInt.value = amb.intensity + hemi.intensity * 0.35;
+    terrainUniforms.uAmbInt.value = amb.intensity + hemi.intensity * 0.4;
     terrainUniforms.uFogColor.value.copy(fc);
     terrainUniforms.uFogNear.value = FOG_NEAR;
     terrainUniforms.uFogFar.value = FOG_FAR;
+    /* deeper shadows at high sun, softer wash at dawn/dusk */
+    terrainUniforms.uShadowStrength.value = night ? 0 : (0.38 + above * 0.32);
     if (maps.grass) terrainUniforms.uGrass.value = maps.grass;
     if (maps.ground) terrainUniforms.uGround.value = maps.ground;
     if (maps.rock) terrainUniforms.uRock.value = maps.rock;
+    /* feed the directional shadow map into the terrain shader (manual sample) */
+    if (sunLight.castShadow && sunLight.shadow && sunLight.shadow.map) {
+      terrainUniforms.uShadowMap.value = sunLight.shadow.map.texture;
+      terrainUniforms.uShadowMatrix.value.copy(sunLight.shadow.matrix);
+      terrainUniforms.uReceiveShadow.value = 1;
+    } else {
+      terrainUniforms.uShadowMap.value = null;
+      terrainUniforms.uReceiveShadow.value = 0;
+    }
 
     /* sun sprite rides the same arc (hide below horizon) */
     const sunVis = above > 0.02 ? Math.min(1, above * 4) : 0;
@@ -1670,7 +1775,8 @@ export function createLot3D(host, width, height) {
 
     const base = sampleH(world.tiles, lord.x, lord.y, mw, mh);
     const bob = (cam.bob || 0) * 0.06 * Math.sin((time || 0) * 14);
-    const eye = base + EYE + bob;
+    const eyeH = (p.cineEye != null && p.cineEye > 0) ? p.cineEye : EYE;
+    const eye = base + eyeH + bob;
     const px = lord.x + 0.5;
     const pz = lord.y + 0.5;
 
@@ -1685,10 +1791,142 @@ export function createLot3D(host, width, height) {
     const fwdX = fd.dx / fl;
     const fwdZ = fd.dy / fl;
 
-    const back = 0.25;
-    camera.position.set(px - fwdX * back, eye, pz - fwdZ * back);
-    camera.up.set(0, 1, 0);
-    camera.lookAt(px + fwdX * 8, eye - 0.25, pz + fwdZ * 8);
+    /* cineBack / cineLook: optional pull-back for title/end vistas */
+    const back = (p.cineBack != null && p.cineBack >= 0) ? p.cineBack : 0.25;
+    const look = (p.cineLook != null && p.cineLook > 0) ? p.cineLook : 8;
+    const camX = px - fwdX * back;
+    const camZ = pz - fwdZ * back;
+    /* free look-at target (smooth 360 orbit) or 8-way face ray */
+    let lookX, lookZ, lookFwdX = fwdX, lookFwdZ = fwdZ;
+    if (p.cineLookAt && Number.isFinite(p.cineLookAt.x) && Number.isFinite(p.cineLookAt.y)) {
+      lookX = p.cineLookAt.x + 0.5;
+      lookZ = p.cineLookAt.y + 0.5;
+      const ldx = lookX - camX, ldz = lookZ - camZ;
+      const ll = Math.hypot(ldx, ldz) || 1;
+      lookFwdX = ldx / ll;
+      lookFwdZ = ldz / ll;
+    } else {
+      lookX = px + fwdX * look;
+      lookZ = pz + fwdZ * look;
+    }
+
+    /*
+      Cinematic terrain clearance (intro / game-over / victory):
+      sample ground under/ahead of the camera, soft-filter the clearance target,
+      then follow with a critically damped spring so height changes never hitch.
+    */
+    if (p.cineClear) {
+      const tiles = world.tiles;
+      const clearance = (p.cineClearance != null) ? p.cineClearance : 1.5;
+      let maxG = -1e9;
+      const bump = (mx, mz) => {
+        const gnd = sampleH(tiles, mx, mz, mw, mh);
+        const ix = Math.max(0, Math.min(mw - 1, mx | 0));
+        const iy = Math.max(0, Math.min(mh - 1, mz | 0));
+        const tt = tiles[iy * mw + ix].t;
+        /* mesh peaks / props sit a bit above sampleH plateaus */
+        let fudge = 0.25;
+        if (tt === 'mountains') fudge = 2.05;
+        else if (tt === 'hills') fudge = 0.65;
+        else if (tt === 'keep' || tt === 'citadel') fudge = 1.85;
+        else if (tt === 'tower') fudge = 1.55;
+        else if (tt === 'forest') fudge = 0.85;
+        const h = gnd + fudge;
+        if (h > maxG) maxG = h;
+      };
+      /* under camera + ring */
+      for (let r = 0; r <= 4; r++) {
+        if (r === 0) bump(camX, camZ);
+        else {
+          for (let a = 0; a < 8; a++) {
+            const ang = (a / 8) * Math.PI * 2;
+            bump(camX + Math.cos(ang) * r * 0.95, camZ + Math.sin(ang) * r * 0.95);
+          }
+        }
+      }
+      /* along look corridor toward the Rift / face */
+      const span = Math.min(Math.hypot(lookX - camX, lookZ - camZ) || look, 16);
+      for (let i = 1; i <= 16; i++) {
+        const t = i / 16;
+        bump(camX + lookFwdX * span * t, camZ + lookFwdZ * span * t);
+      }
+      /* orbit / path lookahead from game.js (pre-rise before peaks) */
+      if (Array.isArray(p.cineProbes)) {
+        for (let i = 0; i < p.cineProbes.length; i++) {
+          const pr = p.cineProbes[i];
+          if (!pr || !Number.isFinite(pr.x) || !Number.isFinite(pr.y)) continue;
+          bump(pr.x + 0.5, pr.y + 0.5);
+          for (let a = 0; a < 4; a++) {
+            const ang = (a / 4) * Math.PI * 2;
+            bump(pr.x + 0.5 + Math.cos(ang) * 1.1, pr.y + 0.5 + Math.sin(ang) * 1.1);
+          }
+        }
+      }
+
+      const now = (typeof time === 'number') ? time : 0;
+      let dt = now - (cineLastT == null ? now : cineLastT);
+      if (!(dt > 0) || dt > 0.2) dt = 1 / 60;
+      cineLastT = now;
+
+      const baseFloor = eye;
+      const desiredRaw = Math.max(baseFloor, maxG + clearance) + bob * 0.15;
+
+      /* soft-filter the target so tile edges don't spike desired height */
+      if (cineDesY == null || !Number.isFinite(cineDesY)) cineDesY = desiredRaw;
+      const tauDes = desiredRaw > cineDesY ? 0.55 : 1.15; /* settle down more slowly */
+      const aDes = 1 - Math.exp(-dt / tauDes);
+      cineDesY += (desiredRaw - cineDesY) * aDes;
+
+      /* critically damped spring toward filtered target — hitch-free motion */
+      if (cineEyeY == null || !Number.isFinite(cineEyeY)) {
+        cineEyeY = cineDesY;
+        cineEyeV = 0;
+      }
+      const omega = 2.1;   /* natural freq — lower = silkier */
+      const zeta = 1.0;    /* critical damping */
+      const err = cineDesY - cineEyeY;
+      const accel = omega * omega * err - 2 * zeta * omega * cineEyeV;
+      cineEyeV += accel * dt;
+      /* gentle velocity clamp only as a safety net */
+      if (cineEyeV > 3.2) cineEyeV = 3.2;
+      if (cineEyeV < -2.0) cineEyeV = -2.0;
+      cineEyeY += cineEyeV * dt;
+
+      /* soft emergency floor — no hard snap: blend up if we drift into ground */
+      const hardFloor = maxG + clearance * 0.5;
+      if (cineEyeY < hardFloor) {
+        const pull = (hardFloor - cineEyeY) * Math.min(1, dt * 6);
+        cineEyeY += pull;
+        if (cineEyeV < 0) cineEyeV *= 0.3;
+      }
+
+      camera.position.set(camX, cineEyeY, camZ);
+      camera.up.set(0, 1, 0);
+
+      const lookG = sampleH(tiles, lookX, lookZ, mw, mh);
+      const lookTarget = Math.max(lookG + 0.4, Math.min(cineEyeY - 1.7, lookG + 1.6));
+      if (cineLookY == null || !Number.isFinite(cineLookY)) {
+        cineLookY = lookTarget;
+        cineLookV = 0;
+      }
+      const lErr = lookTarget - cineLookY;
+      const lAcc = 1.6 * 1.6 * lErr - 2 * 1.0 * 1.6 * cineLookV;
+      cineLookV += lAcc * dt;
+      if (cineLookV > 2.5) cineLookV = 2.5;
+      if (cineLookV < -2.5) cineLookV = -2.5;
+      cineLookY += cineLookV * dt;
+      camera.lookAt(lookX, cineLookY, lookZ);
+    } else {
+      cineEyeY = null;
+      cineEyeV = null;
+      cineDesY = null;
+      cineLookY = null;
+      cineLookV = null;
+      cineLastT = null;
+      camera.position.set(camX, eye, camZ);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(lookX, eye - 0.25, lookZ);
+    }
     /* no roll/pan on the 3D rig — they were fighting the face vector */
 
     sky.position.copy(camera.position);
@@ -1697,6 +1935,12 @@ export function createLot3D(host, width, height) {
     renderer.render(scene, camera);
   }
   render._ck = -1;
+  let cineEyeY = null;
+  let cineEyeV = null;
+  let cineDesY = null;
+  let cineLookY = null;
+  let cineLookV = null;
+  let cineLastT = null;
 
   function setVisible(on) {
     host.style.display = on ? 'block' : 'none';

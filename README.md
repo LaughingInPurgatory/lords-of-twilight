@@ -35,13 +35,22 @@ Grab the installer for your platform from the [GitHub Releases](https://github.c
 
 Scores and saves live per-user (e.g. `~/Library/Application Support/Lords of Twilight/` on macOS, `%APPDATA%\Lords of Twilight\` on Windows), so they survive reinstalls and updates.
 
-The four music tracks (title / gameplay / victory / defeat) are bundled in and play automatically; toggle them from the title screen or the in-game HUD, and your choice is remembered.
+The four music tracks (title / gameplay / victory / defeat) are bundled in and play automatically; toggle them with **U** or from **Settings**, and your choice is remembered.
 
 ### Graphics
 
-From **v2.3** onward the play view is a low-poly **WebGL** world (Three.js): textured terrain, sky, keeps and villages, and an elaborate **Abyssal Rift** setpiece. If WebGL cannot start, the game falls back to the classic 2D canvas panorama automatically.
+From **v2.3** onward the play view is a low-poly **WebGL** world (Three.js): textured terrain, sky, keeps and villages, and an elaborate **Abyssal Rift** setpiece. **v2.4** adds directional lighting and shadows, a larger **120×88** realm, cinematic camera easing, and a warm dark-fantasy HUD. If WebGL cannot start, the game falls back to the classic 2D canvas panorama automatically.
 
 > **Note:** v2.3.0 release binaries accidentally fell back to 2D because packaging dropped Three's `OBJLoader`. **v2.3.1+** vendors Three under `renderer/vendor/` so the WebGL view ships correctly.
+
+### What’s new in 2.4.0
+
+- New application icon (knight vs abyssal champion)
+- Larger procedural map (120×88) with save schema **v3**
+- WebGL lighting, shadows, taller mountains, smoother camera
+- Warm dark-fantasy title / pause / end UI polish
+- Clean full quit on macOS (traffic light, ⌘Q, dock Quit, pause Quit)
+- Minimal macOS menu (About + Quit only); in-game pause owns Save / Continue
 
 ## Run from source / build it yourself
 
@@ -50,7 +59,7 @@ You need Node and (for `npm install` only) network access — Electron downloads
 ```bash
 npm install            # electron + electron-builder (+ three as a dev dep for re-vendoring)
 npm start              # run the game in its own window
-npm run icon           # regenerate build/icon.png (optional)
+npm run icon           # rebuild build/icon.png from icon.jpg (optional)
 
 npm run dist:mac       # → dist/*.dmg (arm64 + x64)
 npm run dist:linux     # → dist/*.AppImage
@@ -60,11 +69,14 @@ npm run dist           # all platforms configured in package.json
 
 `npm run dist` builds all three platforms at once. Cross-building the Windows **NSIS installer** from macOS/Linux works because electron-builder ships its own bundled NSIS + Wine; if that ever fails, `npm run dist:win:nowine` produces just the runnable `.exe`-in-a-`.zip`.
 
+The app icon is `build/icon.png` (used by electron-builder for `.icns` / `.ico`). Source art lives at **`icon.jpg`**; `npm run icon` re-keys the checkerboard fringe onto a dark background for packaging.
+
 ### Project layout
 
 ```
 main.js                 Electron main — window, scores + save IPC, clean quit
 preload.js              contextBridge (lotScores / lotSave / lotApp)
+icon.jpg                source art for the app icon
 renderer/
   index.html            shell, CSS, overlays, HUD, import map
   boot.js               loads WebGL view, then game.js (2D fallback if needed)
@@ -74,9 +86,9 @@ renderer/
   textures/             terrain / structure / Rift oil textures (CC0)
   models/               crystal spire OBJ for the Rift
   *.mp3                 title / bg / win / ded
-scripts/make-icon.js    pure-Node icon PNG
+scripts/make-icon.js    icon.jpg → build/icon.png (packaging)
 build/afterPack.js      macOS ad-hoc codesign after pack
-build/icon.png
+build/icon.png          1024² app / installer icon
 ```
 
 Three.js is **vendored** into `renderer/vendor/` so electron-builder always packs it (it strips `node_modules/**/examples/**` by default, which would otherwise drop `OBJLoader`). The `three` npm package is a **devDependency** for re-copying those files when upgrading.
@@ -101,18 +113,18 @@ The game supports **keyboard, mouse, and gamepad** simultaneously — use whiche
 
 | Action | Keyboard | Mouse | Gamepad |
 |---|---|---|---|
-| Turn left / right | `←` `→` or `A` `D` | Click left/right edge of the view | D-pad / left stick |
-| Move forward | `↑` or `W` | Click the center of the view | D-pad / left stick up |
-| Move back | `↓` or `S` | — | D-pad / left stick down |
-| Rest until dawn | `R` | REST button | X |
-| Open/close map | `M` | MAP button | Y |
-| Switch active lord | `Tab` | NEXT LORD button | LB / RB |
-| Pause | `Esc` | — | — |
-| Save quest | `⌘S` / `Ctrl+S` (menu) | Pause / menu | — |
-| Continue quest | title **Continue**, or `⌘O` / `Ctrl+O` | — | — |
-| Confirm / continue | `Enter` or `Space` | Continue button | A |
-| Cancel / close | `Esc` | Close button | B |
-| Toggle music | — | ♪ button (title or HUD) | — |
+| Turn left / right | `←` `→` or `A` `D` | Click left/right third of the view | D-pad / left stick |
+| Move forward | `↑` or `W` (also `F`) | Click the centre of the view | D-pad up / left stick up |
+| Move back | `↓` or `S` | — | Left stick down |
+| Rest until dawn | `R` | REST button | **X** or D-pad down |
+| Open/close map | `M` | MAP button | **Y** |
+| Next / previous lord | `Tab` or `N` / `Q` | NEXT LORD button | **RB** / **LB** |
+| Pause / resume | `Esc` | — | **B** or **Start** |
+| Save quest | — | Pause → **Save Quest** | — |
+| Continue quest | — | title **Continue Quest** | — |
+| Confirm / continue | `Enter` or `Space` | Continue button | **A** |
+| Toggle music | `U` | Settings → Music | — |
+| Annals (intro) | — | **Annals** button | — |
 
 ### Exploring & recruiting
 

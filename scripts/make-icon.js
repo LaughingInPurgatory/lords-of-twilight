@@ -1,113 +1,187 @@
 /* ==========================================================================
-   make-icon.js — generates build/icon.png (1024x1024) with pure Node.
-   No dependencies: a tiny PNG encoder + procedural "Abyssal Rift" artwork.
-   electron-builder converts this PNG into .icns / .ico at package time.
-       node scripts/make-icon.js
+   make-icon.js — build/icon.png for electron-builder (.icns / .ico at pack).
+
+   Source: icon.jpg at repo root (1024×1024 art, often exported on a
+   checkerboard). We key the greyscale checker fringe onto the game’s
+   deep-twilight background so the dock / installer icon looks solid.
+
+       npm run icon
+       node scripts/make-icon.js [path/to/source.jpg]
    ========================================================================== */
 'use strict';
 
-const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
+const { execFileSync } = require('child_process');
 
-const S = 1024;
-const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
-const lerp = (a, b, t) => a + (b - a) * t;
+const ROOT = path.join(__dirname, '..');
+const SRC = process.argv[2]
+  ? path.resolve(process.argv[2])
+  : path.join(ROOT, 'icon.jpg');
+const OUT = path.join(ROOT, 'build', 'icon.png');
 
-/* ---- scene geometry ---------------------------------------------------- */
-const CX = S / 2, CY = S / 2;
-// the jagged rift, a lightning-like bolt down the middle
-const BOLT = [
-  [512, 150], [470, 320], [556, 452], [496, 556],
-  [566, 690], [478, 812], [520, 900],
-];
-function distToBolt(x, y) {
-  let best = 1e9;
-  for (let i = 0; i < BOLT.length - 1; i++) {
-    const [x1, y1] = BOLT[i], [x2, y2] = BOLT[i + 1];
-    const dx = x2 - x1, dy = y2 - y1;
-    const t = clamp(((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy), 0, 1);
-    const px = x1 + dx * t, py = y1 + dy * t;
-    best = Math.min(best, Math.hypot(x - px, y - py));
+/* window chrome / brand void */
+const BR = 0x0b, BG = 0x0a, BB = 0x12;
+
+function loadRGBAFromImage(srcPath) {
+  if (!fs.existsSync(srcPath)) {
+    throw new Error('icon source not found: ' + srcPath);
   }
-  return best;
-}
-// a few fixed stars
-const STARS = [[210, 240], [300, 170], [820, 210], [760, 330], [880, 470], [180, 640], [860, 760], [260, 830]];
-
-/* ---- render ------------------------------------------------------------ */
-const raw = Buffer.alloc(S * (1 + S * 4));
-for (let y = 0; y < S; y++) {
-  raw[y * (1 + S * 4)] = 0; // filter byte
-  for (let x = 0; x < S; x++) {
-    const pr = Math.hypot(x - CX, y - CY);
-    const rn = clamp(pr / (S * 0.52), 0, 1);
-
-    // dark radial background, twilight purple fading to near-black
-    let r = lerp(30, 6, Math.pow(rn, 1.1));
-    let gg = lerp(24, 5, Math.pow(rn, 1.1));
-    let b = lerp(50, 12, Math.pow(rn, 1.1));
-
-    // faint stars
-    for (const [sx, sy] of STARS) {
-      const sd = Math.hypot(x - sx, y - sy);
-      if (sd < 3.2) { const a = 1 - sd / 3.2; r = lerp(r, 235, a); gg = lerp(gg, 236, a); b = lerp(b, 255, a); }
+  const tmp = path.join(require('os').tmpdir(), 'lot-icon-src.png');
+  execFileSync('sips', ['-s', 'format', 'png', srcPath, '--out', tmp], { stdio: 'ignore' });
+  const buf = fs.readFileSync(tmp);
+  let off = 8, w, h, color, idat = Buffer.alloc(0);
+  while (off < buf.length) {
+    const len = buf.readUInt32BE(off); off += 4;
+    const type = buf.toString('ascii', off, off + 4); off += 4;
+    const data = buf.subarray(off, off + len); off += len + 4;
+    if (type === 'IHDR') {
+      w = data.readUInt32BE(0);
+      h = data.readUInt32BE(4);
+      color = data[9];
+    } else if (type === 'IDAT') {
+      idat = Buffer.concat([idat, data]);
+    } else if (type === 'IEND') break;
+  }
+  const bpp = color === 6 ? 4 : color === 2 ? 3 : 0;
+  if (!bpp) throw new Error('unsupported PNG color type ' + color);
+  const inflated = zlib.inflateSync(idat);
+  const stride = 1 + w * bpp;
+  const recon = Buffer.alloc(w * h * bpp);
+  for (let y = 0; y < h; y++) {
+    const ft = inflated[y * stride];
+    const row = inflated.subarray(y * stride + 1, y * stride + 1 + w * bpp);
+    const out = recon.subarray(y * w * bpp, (y + 1) * w * bpp);
+    const prev = y > 0 ? recon.subarray((y - 1) * w * bpp, y * w * bpp) : null;
+    for (let i = 0; i < w * bpp; i++) {
+      const left = i >= bpp ? out[i - bpp] : 0;
+      const up = prev ? prev[i] : 0;
+      const upLeft = prev && i >= bpp ? prev[i - bpp] : 0;
+      let val = row[i];
+      if (ft === 1) val = (val + left) & 255;
+      else if (ft === 2) val = (val + up) & 255;
+      else if (ft === 3) val = (val + ((left + up) >> 1)) & 255;
+      else if (ft === 4) {
+        const p = left + up - upLeft;
+        const pa = Math.abs(p - left), pb = Math.abs(p - up), pc = Math.abs(p - upLeft);
+        val = (val + (pa <= pb && pa <= pc ? left : pb <= pc ? up : upLeft)) & 255;
+      } else if (ft !== 0) {
+        throw new Error('PNG filter ' + ft);
+      }
+      out[i] = val;
     }
+  }
+  const rgba = Buffer.alloc(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    rgba[i * 4] = recon[i * bpp];
+    rgba[i * 4 + 1] = recon[i * bpp + 1];
+    rgba[i * 4 + 2] = recon[i * bpp + 2];
+    rgba[i * 4 + 3] = 255;
+  }
+  return { w, h, rgba };
+}
 
-    // the rift glow (additive)
-    const d = distToBolt(x, y);
-    const halo = Math.exp(-d / 130) * 0.9;   // wide magenta aura
-    const core = Math.exp(-d / 16);          // bright white-hot core
-    r = clamp(r + halo * 210 + core * 255, 0, 255);
-    gg = clamp(gg + halo * 60 + core * 235, 0, 255);
-    b = clamp(b + halo * 235 + core * 255, 0, 255);
+function keyCheckerboard(img) {
+  const { w, h, rgba } = img;
+  const cx = (w - 1) / 2;
+  const cy = (h - 1) / 2 + 8;
+  const R_ART = Math.min(w, h) * 0.466;
+  let n = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      const r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+      const sat = Math.max(r, g, b) - Math.min(r, g, b);
+      const avg = (r + g + b) / 3;
+      const dist = Math.hypot(x - cx, y - cy);
+      const isChroma = sat >= 28;
+      const isChecker = sat < 22 && (avg <= 38 || avg >= 218);
+      const isMush = sat < 14 && avg > 38 && avg < 218;
 
-    // gold double ring border
-    for (const [R, w] of [[476, 9], [452, 5]]) {
-      const rd = Math.abs(pr - R);
-      if (rd < w) {
-        const a = (1 - rd / w) * 0.95;
-        r = lerp(r, 236, a); gg = lerp(gg, 196, a); b = lerp(b, 92, a);
+      let replace = false;
+      if (dist > R_ART + 40) {
+        if (!isChroma || (avg > 240 && sat < 45)) replace = true;
+        else if (isChecker || isMush) replace = true;
+      } else if (dist > R_ART) {
+        if (isChecker || (isMush && avg > 180)) replace = true;
+        if (!isChroma && avg >= 210) replace = true;
+        if (!isChroma && avg <= 25) replace = true;
+      }
+      /* protect title lettering under the medallion */
+      if (replace && y > h * 0.76 && y < h * 0.97 && x > w * 0.09 && x < w * 0.92 && sat > 18) {
+        replace = false;
+      }
+      if (replace) {
+        rgba[o] = BR; rgba[o + 1] = BG; rgba[o + 2] = BB;
+        n++;
       }
     }
-
-    const o = y * (1 + S * 4) + 1 + x * 4;
-    raw[o] = r | 0; raw[o + 1] = gg | 0; raw[o + 2] = b | 0; raw[o + 3] = 255;
   }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const o = (y * w + x) * 4;
+      if (rgba[o] === BR && rgba[o + 1] === BG && rgba[o + 2] === BB) continue;
+      const r = rgba[o], g = rgba[o + 1], b = rgba[o + 2];
+      const sat = Math.max(r, g, b) - Math.min(r, g, b);
+      const avg = (r + g + b) / 3;
+      const dist = Math.hypot(x - cx, y - cy);
+      if (sat < 18 && avg >= 225 && dist > R_ART * 0.84) {
+        rgba[o] = BR; rgba[o + 1] = BG; rgba[o + 2] = BB;
+        n++;
+      }
+    }
+  }
+  return n;
 }
 
-/* ---- PNG encode -------------------------------------------------------- */
-const CRC = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
+function writePNG(file, w, h, rgba) {
+  const CRC = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return (buf) => {
+      let c = 0xFFFFFFFF;
+      for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0;
+    };
+  })();
+  function chunk(type, data) {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+    const tb = Buffer.from(type, 'ascii');
+    const body = Buffer.concat([tb, data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(CRC(body), 0);
+    return Buffer.concat([len, body, crc]);
   }
-  return buf => {
-    let c = 0xFFFFFFFF;
-    for (let i = 0; i < buf.length; i++) c = t[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
-    return (c ^ 0xFFFFFFFF) >>> 0;
-  };
-})();
-function chunk(type, data) {
-  const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
-  const tb = Buffer.from(type, 'ascii');
-  const body = Buffer.concat([tb, data]);
-  const crc = Buffer.alloc(4); crc.writeUInt32BE(CRC(body), 0);
-  return Buffer.concat([len, body, crc]);
+  const raw = Buffer.alloc(h * (1 + w * 4));
+  for (let y = 0; y < h; y++) {
+    raw[y * (1 + w * 4)] = 0;
+    rgba.copy(raw, y * (1 + w * 4) + 1, y * w * 4, (y + 1) * w * 4);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  const png = Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, png);
+  return png.length;
 }
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(S, 0); ihdr.writeUInt32BE(S, 4);
-ihdr[8] = 8; ihdr[9] = 6; // 8-bit, RGBA
-const png = Buffer.concat([
-  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
-]);
 
-const out = path.join(__dirname, '..', 'build', 'icon.png');
-fs.mkdirSync(path.dirname(out), { recursive: true });
-fs.writeFileSync(out, png);
-console.log('wrote', out, (png.length / 1024).toFixed(1) + ' KB');
+const img = loadRGBAFromImage(SRC);
+const keyed = keyCheckerboard(img);
+const bytes = writePNG(OUT, img.w, img.h, img.rgba);
+console.log(
+  'wrote', OUT,
+  (bytes / 1024).toFixed(1) + ' KB',
+  '(' + img.w + '×' + img.h + ', keyed ' + keyed + ' bg px from', path.basename(SRC) + ')'
+);
