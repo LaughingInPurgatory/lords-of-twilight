@@ -1,7 +1,7 @@
 {
   "name": "lords-of-twilight",
   "productName": "Lords of Twilight",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "A retro-modern strategy/adventure game in the spirit of Lords of Midnight — a fully self-contained Electron desktop app.",
   "author": "LaughingInPurgatory <gkorbey@gmail.com>",
   "license": "MIT",
@@ -15,12 +15,11 @@
     "dist:win:nowine": "electron-builder --win zip --x64 --arm64",
     "dist:linux": "electron-builder --linux AppImage --x64 --arm64"
   },
-  "dependencies": {
-    "three": "^0.172.0"
-  },
+  "dependencies": {},
   "devDependencies": {
     "electron": "^31.7.6",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "three": "^0.172.0"
   },
   "build": {
     "appId": "com.schtufbox.lordsoftwilight",
@@ -35,10 +34,7 @@
       "main.js",
       "preload.js",
       "renderer/**/*",
-      "package.json",
-      "node_modules/three/build/**/*",
-      "node_modules/three/examples/jsm/loaders/OBJLoader.js",
-      "node_modules/three/package.json"
+      "package.json"
     ],
     "asarUnpack": [
       "**/*.mp3"

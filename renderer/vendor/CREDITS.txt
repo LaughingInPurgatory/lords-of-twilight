@@ -1,0 +1,5 @@
+three.js r172 (https://threejs.org/) — MIT License
+Vendored for the packaged app (file:// safe, survives electron-builder):
+  vendor/three.module.min.js
+  vendor/three.core.min.js   (imported by three.module.min.js)
+  vendor/addons/loaders/OBJLoader.js
