@@ -4,6 +4,14 @@
   <img src="build/icon.png" alt="Lords of Twilight" width="256" height="256">
 </p>
 
+<p align="center">
+  <a href="https://ko-fi.com/laughinginpurgatory" target="_blank" rel="noopener noreferrer">
+    <img src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" alt="Support me on Ko-fi" height="36">
+  </a>
+  <br>
+  <em>Please support me on Kofi, every bit helps!</em>
+</p>
+
 *A tale of the Third Age of Midnight*
 
 A strategy/adventure game in the spirit of Mike Singleton's **Lords of Midnight** and **Doomdark's Revenge** — first-person exploration, a compass, and a realm to rally. This time the enemy isn't Doomdark's army: it's the Abyss itself, pouring through a Rift torn into the world.
