@@ -1,16 +1,19 @@
 # Lords of Twilight
 
-<p align="center">
-  <img src="build/icon.png" alt="Lords of Twilight" width="256" height="256">
-</p>
-
-<p align="center">
-  <a href="https://ko-fi.com/laughinginpurgatory" target="_blank" rel="noopener noreferrer">
-    <img src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" alt="Support me on Ko-fi" height="36">
-  </a>
-  <br>
-  <em>Please support me on Kofi, every bit helps!</em>
-</p>
+<table>
+  <tr>
+    <td valign="middle">
+      <img src="build/icon.png" alt="Lords of Twilight" width="256" height="256">
+    </td>
+    <td valign="middle">
+      <a href="https://ko-fi.com/laughinginpurgatory" target="_blank" rel="noopener noreferrer">
+        <img src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" alt="Support me on Ko-fi" height="36">
+      </a>
+      <br>
+      <em>Please support me on Kofi, every bit helps!</em>
+    </td>
+  </tr>
+</table>
 
 *A tale of the Third Age of Midnight*
 
